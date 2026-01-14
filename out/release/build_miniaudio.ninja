@@ -1,0 +1,44 @@
+# project build file
+# generated with premake ninja
+
+ninja_required_version = 1.6
+
+# core rules for default
+CFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:/Rei_Wolf/dev/devkitPro/devkitA64 --sysroot=D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -std=gnu99 -MD -MP -flto -O2 -fPIC -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DMA_NO_THREADING -DMA_NO_DEVICE_IO -DMA_NO_RUNTIME_LINKING -I../../dependencies/rive-app_miniaudio_rive_changes_5
+rule cc
+  command = clang $CFLAGS -x c -MF $out.d -c -o $out $in
+  description = cc $out
+  depfile = $out.d
+  deps = gcc
+
+CXXFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:/Rei_Wolf/dev/devkitPro/devkitA64 --sysroot=D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -std=gnu99 -MD -MP -flto -O2 -fPIC -std=c++17 -fno-exceptions -fno-rtti -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DMA_NO_THREADING -DMA_NO_DEVICE_IO -DMA_NO_RUNTIME_LINKING -I../../dependencies/rive-app_miniaudio_rive_changes_5
+rule cxx
+  command = clang++ $CXXFLAGS -MF $out.d -c -o $out $in
+  description = cxx $out
+  depfile = $out.d
+  deps = gcc
+
+RESFLAGS =  -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DMA_NO_THREADING -DMA_NO_DEVICE_IO -DMA_NO_RUNTIME_LINKING -I../../dependencies/rive-app_miniaudio_rive_changes_5
+rule rc
+  command = windres -i $in -o $out $RESFLAGS
+  description = rc $out
+
+rule ar
+  command = D:/Rei_Wolf/dev/devkitPro/devkitA64/bin/aarch64-none-elf-ar.exe rcs $out $in
+  description = ar $out
+
+rule copy
+  command = copy /B /Y $in $out
+  description = copy $in $out
+
+rule custom_command
+  command = $CUSTOM_COMMAND
+  description = $CUSTOM_DESCRIPTION
+
+# build files
+build obj/default/miniaudio/miniaudio.o: cc ../../dependencies/rive-app_miniaudio_rive_changes_5/miniaudio.c
+
+# link static lib
+build ./libminiaudio.a: ar obj/default/miniaudio/miniaudio.o
+
+build miniaudio: phony ./libminiaudio.a

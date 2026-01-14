@@ -1,0 +1,102 @@
+# project build file
+# generated with premake ninja
+
+ninja_required_version = 1.6
+
+# core rules for default
+CFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:/Rei_Wolf/dev/devkitPro/devkitA64 --sysroot=D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -Werror=format -Wimplicit-int-conversion -Werror=vla -MD -MP -Werror -flto -Os -fPIC -w -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DHB_ONLY_ONE_SHAPER -DHAVE_OT -DHB_NO_FALLBACK_SHAPE -DHB_NO_WIN1256 -DHB_NO_EXTERN_HELPERS -DHB_DISABLE_DEPRECATED -DHB_NO_COLOR -DHB_NO_BITMAP -DHB_NO_BUFFER_SERIALIZE -DHB_NO_BUFFER_VERIFY -DHB_NO_BUFFER_MESSAGE -DHB_NO_SETLOCALE -DHB_NO_VERTICAL -DHB_NO_LAYOUT_COLLECT_GLYPHS -DHB_NO_LAYOUT_RARELY_USED -DHB_NO_LAYOUT_UNUSED -DHB_NO_OT_FONT_GLYPH_NAMES -DHB_NO_PAINT -DHB_NO_MMAP -DHB_NO_META -I../.. -I../../dependencies/rive-app_harfbuzz_rive_10.1.0/src -I../../dependencies -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0 -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/aarch64-none-elf -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/backward -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include-fixed -include rive_harfbuzz_renames.h
+rule cc
+  command = clang $CFLAGS -x c -MF $out.d -c -o $out $in
+  description = cc $out
+  depfile = $out.d
+  deps = gcc
+
+CXXFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:/Rei_Wolf/dev/devkitPro/devkitA64 --sysroot=D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -Werror=format -Wimplicit-int-conversion -Werror=vla -MD -MP -Werror -flto -Os -fPIC -w -std=c++17 -fno-exceptions -fno-rtti -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DHB_ONLY_ONE_SHAPER -DHAVE_OT -DHB_NO_FALLBACK_SHAPE -DHB_NO_WIN1256 -DHB_NO_EXTERN_HELPERS -DHB_DISABLE_DEPRECATED -DHB_NO_COLOR -DHB_NO_BITMAP -DHB_NO_BUFFER_SERIALIZE -DHB_NO_BUFFER_VERIFY -DHB_NO_BUFFER_MESSAGE -DHB_NO_SETLOCALE -DHB_NO_VERTICAL -DHB_NO_LAYOUT_COLLECT_GLYPHS -DHB_NO_LAYOUT_RARELY_USED -DHB_NO_LAYOUT_UNUSED -DHB_NO_OT_FONT_GLYPH_NAMES -DHB_NO_PAINT -DHB_NO_MMAP -DHB_NO_META -I../.. -I../../dependencies/rive-app_harfbuzz_rive_10.1.0/src -I../../dependencies -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0 -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/aarch64-none-elf -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/backward -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include-fixed -include rive_harfbuzz_renames.h
+rule cxx
+  command = clang++ $CXXFLAGS -MF $out.d -c -o $out $in
+  description = cxx $out
+  depfile = $out.d
+  deps = gcc
+
+RESFLAGS =  -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DHB_ONLY_ONE_SHAPER -DHAVE_OT -DHB_NO_FALLBACK_SHAPE -DHB_NO_WIN1256 -DHB_NO_EXTERN_HELPERS -DHB_DISABLE_DEPRECATED -DHB_NO_COLOR -DHB_NO_BITMAP -DHB_NO_BUFFER_SERIALIZE -DHB_NO_BUFFER_VERIFY -DHB_NO_BUFFER_MESSAGE -DHB_NO_SETLOCALE -DHB_NO_VERTICAL -DHB_NO_LAYOUT_COLLECT_GLYPHS -DHB_NO_LAYOUT_RARELY_USED -DHB_NO_LAYOUT_UNUSED -DHB_NO_OT_FONT_GLYPH_NAMES -DHB_NO_PAINT -DHB_NO_MMAP -DHB_NO_META -ID:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0 -ID:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/aarch64-none-elf -ID:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/backward -ID:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include -ID:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include-fixed -I../.. -I../../dependencies/rive-app_harfbuzz_rive_10.1.0/src -I../../dependencies
+rule rc
+  command = windres -i $in -o $out $RESFLAGS
+  description = rc $out
+
+rule ar
+  command = D:/Rei_Wolf/dev/devkitPro/devkitA64/bin/aarch64-none-elf-ar.exe rcs $out $in
+  description = ar $out
+
+rule copy
+  command = copy /B /Y $in $out
+  description = copy $in $out
+
+rule custom_command
+  command = $CUSTOM_COMMAND
+  description = $CUSTOM_DESCRIPTION
+
+# build files
+build obj/default/rive_harfbuzz/gsubgpos-context.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/graph/gsubgpos-context.cc
+build obj/default/rive_harfbuzz/hb-aat-layout.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-aat-layout.cc
+build obj/default/rive_harfbuzz/hb-aat-map.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-aat-map.cc
+build obj/default/rive_harfbuzz/hb-blob.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-blob.cc
+build obj/default/rive_harfbuzz/hb-buffer-serialize.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-buffer-serialize.cc
+build obj/default/rive_harfbuzz/hb-buffer-verify.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-buffer-verify.cc
+build obj/default/rive_harfbuzz/hb-buffer.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-buffer.cc
+build obj/default/rive_harfbuzz/hb-common.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-common.cc
+build obj/default/rive_harfbuzz/hb-draw.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-draw.cc
+build obj/default/rive_harfbuzz/hb-face.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-face.cc
+build obj/default/rive_harfbuzz/hb-font.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-font.cc
+build obj/default/rive_harfbuzz/hb-map.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-map.cc
+build obj/default/rive_harfbuzz/hb-number.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-number.cc
+build obj/default/rive_harfbuzz/hb-ot-cff1-table.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-cff1-table.cc
+build obj/default/rive_harfbuzz/hb-ot-cff2-table.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-cff2-table.cc
+build obj/default/rive_harfbuzz/hb-ot-color.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-color.cc
+build obj/default/rive_harfbuzz/hb-ot-face.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-face.cc
+build obj/default/rive_harfbuzz/hb-ot-font.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-font.cc
+build obj/default/rive_harfbuzz/hb-ot-layout.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-layout.cc
+build obj/default/rive_harfbuzz/hb-ot-map.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-map.cc
+build obj/default/rive_harfbuzz/hb-ot-math.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-math.cc
+build obj/default/rive_harfbuzz/hb-ot-meta.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-meta.cc
+build obj/default/rive_harfbuzz/hb-ot-metrics.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-metrics.cc
+build obj/default/rive_harfbuzz/hb-ot-name.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-name.cc
+build obj/default/rive_harfbuzz/hb-ot-shape-fallback.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shape-fallback.cc
+build obj/default/rive_harfbuzz/hb-ot-shape-normalize.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shape-normalize.cc
+build obj/default/rive_harfbuzz/hb-ot-shape.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shape.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-arabic.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-arabic.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-default.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-default.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-hangul.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-hangul.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-hebrew.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-hebrew.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-indic-table.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-indic-table.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-indic.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-indic.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-khmer.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-khmer.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-myanmar.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-myanmar.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-syllabic.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-syllabic.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-thai.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-thai.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-use.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-use.cc
+build obj/default/rive_harfbuzz/hb-ot-shaper-vowel-constraints.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-shaper-vowel-constraints.cc
+build obj/default/rive_harfbuzz/hb-ot-tag.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-tag.cc
+build obj/default/rive_harfbuzz/hb-ot-var.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ot-var.cc
+build obj/default/rive_harfbuzz/hb-outline.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-outline.cc
+build obj/default/rive_harfbuzz/hb-paint-extents.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-paint-extents.cc
+build obj/default/rive_harfbuzz/hb-paint.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-paint.cc
+build obj/default/rive_harfbuzz/hb-set.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-set.cc
+build obj/default/rive_harfbuzz/hb-shape-plan.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-shape-plan.cc
+build obj/default/rive_harfbuzz/hb-shape.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-shape.cc
+build obj/default/rive_harfbuzz/hb-shaper.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-shaper.cc
+build obj/default/rive_harfbuzz/hb-static.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-static.cc
+build obj/default/rive_harfbuzz/hb-style.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-style.cc
+build obj/default/rive_harfbuzz/hb-subset-cff-common.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-subset-cff-common.cc
+build obj/default/rive_harfbuzz/hb-subset-cff1.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-subset-cff1.cc
+build obj/default/rive_harfbuzz/hb-subset-cff2.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-subset-cff2.cc
+build obj/default/rive_harfbuzz/hb-subset-input.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-subset-input.cc
+build obj/default/rive_harfbuzz/hb-subset-plan.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-subset-plan.cc
+build obj/default/rive_harfbuzz/hb-subset-repacker.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-subset-repacker.cc
+build obj/default/rive_harfbuzz/hb-subset.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-subset.cc
+build obj/default/rive_harfbuzz/hb-ucd.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-ucd.cc
+build obj/default/rive_harfbuzz/hb-unicode.o: cxx ../../dependencies/rive-app_harfbuzz_rive_10.1.0/src/hb-unicode.cc
+
+# link static lib
+build ./librive_harfbuzz.a: ar obj/default/rive_harfbuzz/gsubgpos-context.o obj/default/rive_harfbuzz/hb-aat-layout.o obj/default/rive_harfbuzz/hb-aat-map.o obj/default/rive_harfbuzz/hb-blob.o obj/default/rive_harfbuzz/hb-buffer-serialize.o obj/default/rive_harfbuzz/hb-buffer-verify.o obj/default/rive_harfbuzz/hb-buffer.o obj/default/rive_harfbuzz/hb-common.o obj/default/rive_harfbuzz/hb-draw.o obj/default/rive_harfbuzz/hb-face.o obj/default/rive_harfbuzz/hb-font.o obj/default/rive_harfbuzz/hb-map.o obj/default/rive_harfbuzz/hb-number.o obj/default/rive_harfbuzz/hb-ot-cff1-table.o obj/default/rive_harfbuzz/hb-ot-cff2-table.o obj/default/rive_harfbuzz/hb-ot-color.o obj/default/rive_harfbuzz/hb-ot-face.o obj/default/rive_harfbuzz/hb-ot-font.o obj/default/rive_harfbuzz/hb-ot-layout.o obj/default/rive_harfbuzz/hb-ot-map.o obj/default/rive_harfbuzz/hb-ot-math.o obj/default/rive_harfbuzz/hb-ot-meta.o obj/default/rive_harfbuzz/hb-ot-metrics.o obj/default/rive_harfbuzz/hb-ot-name.o obj/default/rive_harfbuzz/hb-ot-shape-fallback.o obj/default/rive_harfbuzz/hb-ot-shape-normalize.o obj/default/rive_harfbuzz/hb-ot-shape.o obj/default/rive_harfbuzz/hb-ot-shaper-arabic.o obj/default/rive_harfbuzz/hb-ot-shaper-default.o obj/default/rive_harfbuzz/hb-ot-shaper-hangul.o obj/default/rive_harfbuzz/hb-ot-shaper-hebrew.o obj/default/rive_harfbuzz/hb-ot-shaper-indic-table.o obj/default/rive_harfbuzz/hb-ot-shaper-indic.o obj/default/rive_harfbuzz/hb-ot-shaper-khmer.o obj/default/rive_harfbuzz/hb-ot-shaper-myanmar.o obj/default/rive_harfbuzz/hb-ot-shaper-syllabic.o obj/default/rive_harfbuzz/hb-ot-shaper-thai.o obj/default/rive_harfbuzz/hb-ot-shaper-use.o obj/default/rive_harfbuzz/hb-ot-shaper-vowel-constraints.o obj/default/rive_harfbuzz/hb-ot-tag.o obj/default/rive_harfbuzz/hb-ot-var.o obj/default/rive_harfbuzz/hb-outline.o obj/default/rive_harfbuzz/hb-paint-extents.o obj/default/rive_harfbuzz/hb-paint.o obj/default/rive_harfbuzz/hb-set.o obj/default/rive_harfbuzz/hb-shape-plan.o obj/default/rive_harfbuzz/hb-shape.o obj/default/rive_harfbuzz/hb-shaper.o obj/default/rive_harfbuzz/hb-static.o obj/default/rive_harfbuzz/hb-style.o obj/default/rive_harfbuzz/hb-subset-cff-common.o obj/default/rive_harfbuzz/hb-subset-cff1.o obj/default/rive_harfbuzz/hb-subset-cff2.o obj/default/rive_harfbuzz/hb-subset-input.o obj/default/rive_harfbuzz/hb-subset-plan.o obj/default/rive_harfbuzz/hb-subset-repacker.o obj/default/rive_harfbuzz/hb-subset.o obj/default/rive_harfbuzz/hb-ucd.o obj/default/rive_harfbuzz/hb-unicode.o
+
+build rive_harfbuzz: phony ./librive_harfbuzz.a

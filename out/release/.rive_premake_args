@@ -1,0 +1,1 @@
+ninja --config=release --out=out/release --with_rive_text --with_rive_layout --for_switch

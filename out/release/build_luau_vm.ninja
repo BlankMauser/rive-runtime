@@ -1,0 +1,44 @@
+# project build file
+# generated with premake ninja
+
+ninja_required_version = 1.6
+
+# core rules for default
+CFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:/Rei_Wolf/dev/devkitPro/devkitA64 --sysroot=D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -MD -MP -flto -O2 -fPIC -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0 -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/aarch64-none-elf -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/backward -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include-fixed
+rule cc
+  command = clang $CFLAGS -x c -MF $out.d -c -o $out $in
+  description = cc $out
+  depfile = $out.d
+  deps = gcc
+
+CXXFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:/Rei_Wolf/dev/devkitPro/devkitA64 --sysroot=D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -MD -MP -flto -O2 -fPIC -std=c++17 -fno-exceptions -fno-rtti -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0 -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/aarch64-none-elf -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/backward -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include -isystem D:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include-fixed
+rule cxx
+  command = clang++ $CXXFLAGS -MF $out.d -c -o $out $in
+  description = cxx $out
+  depfile = $out.d
+  deps = gcc
+
+RESFLAGS =  -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -ID:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0 -ID:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/aarch64-none-elf -ID:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf/include/c++/15.1.0/backward -ID:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include -ID:/Rei_Wolf/dev/devkitPro/devkitA64/lib/gcc/aarch64-none-elf/15.1.0/include-fixed
+rule rc
+  command = windres -i $in -o $out $RESFLAGS
+  description = rc $out
+
+rule ar
+  command = D:/Rei_Wolf/dev/devkitPro/devkitA64/bin/aarch64-none-elf-ar.exe rcs $out $in
+  description = ar $out
+
+rule copy
+  command = copy /B /Y $in $out
+  description = copy $in $out
+
+rule custom_command
+  command = $CUSTOM_COMMAND
+  description = $CUSTOM_DESCRIPTION
+
+# build files
+build obj/default/luau_vm/dummy.o: cxx ../../dummy.cpp
+
+# link static lib
+build ./libluau_vm.a: ar obj/default/luau_vm/dummy.o
+
+build luau_vm: phony ./libluau_vm.a

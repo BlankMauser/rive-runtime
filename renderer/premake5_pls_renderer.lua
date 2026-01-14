@@ -7,6 +7,13 @@ newoption({
     trigger = 'with_vulkan',
     description = 'compile with support for vulkan',
 })
+newoption({
+    trigger = 'with_nvn',
+    description = 'compile with support for NVN (Nintendo Switch)',
+})
+if _OPTIONS['for_switch'] and not _OPTIONS['with_nvn'] then
+    _OPTIONS['with_nvn'] = true
+end
 -- Guard this in an "if" (instead of filter()) so we don't download these repos when not building
 -- for Vulkan.
 if _OPTIONS['with_vulkan'] then
@@ -37,6 +44,14 @@ end
 filter('system:android')
 do
     defines({ 'RIVE_ANDROID' })
+end
+
+if _OPTIONS['with_nvn'] then
+    defines({ 'RIVE_NVN' })
+    nvn_headers = path.getabsolute(RIVE_RUNTIME_DIR .. '/build/dependencies/nvn/include')
+    if not os.isdir(nvn_headers) then
+        error('NVN headers not found at ' .. nvn_headers)
+    end
 end
 
 newoption({
@@ -199,6 +214,11 @@ do
     files({ 'src/*.cpp', 'src/*.hpp', 'src/*.h', 'src/shaders/*.glsl', 
             'src/shaders/*.frag', 'src/shaders/*.vert', 'include/**.hpp', 'include/**.h' })
 
+    if _OPTIONS['with_nvn'] then
+        externalincludedirs({ nvn_headers })
+        files({ 'src/nvn/**.cpp', 'include/rive/renderer/nvn/**.hpp' })
+    end
+
 
     if _OPTIONS['with_optick'] then
         includedirs({optick .. '/src'})
@@ -234,7 +254,7 @@ do
         })
     end
 
-    filter({ 'system:not ios', 'options:not no_gl' })
+    filter({ 'system:not ios', 'options:not no_gl', 'options:not for_switch' })
     do
         files({
             'src/gl/gl_state.cpp',
@@ -246,7 +266,7 @@ do
         })
     end
 
-    filter({ 'system:windows or macosx or linux' })
+    filter({ 'system:windows or macosx or linux', 'options:not for_switch' })
     do
         files({
             'src/gl/pls_impl_webgl.cpp', -- Emulate WebGL with ANGLE.
