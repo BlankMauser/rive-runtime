@@ -321,7 +321,7 @@ PLS_DECL4F_READONLY(LOCAL_COLOR_PLANE_IDX, colorBuffer);
 PLS_DECL4F(LOCAL_COLOR_PLANE_IDX, colorBuffer);
 #endif
 #endif // !FIXED_FUNCTION_COLOR_OUTPUT
-#ifdef @PLS_BLEND_SRC_OVER
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
 // When PLS has src-over blending enabled, the clip buffer is RGBA8 so we can
 // preserve clip contents by emitting a=0 instead of loading the current value.
 // This is also is a hint to the hardware that it doesn't need to write anything
@@ -347,7 +347,7 @@ PLS_DECL4F_READONLY(CLIP_PLANE_IDX, clipBuffer);
 #ifdef @ENABLE_CLIPPING
 PLS_DECLUI(CLIP_PLANE_IDX, clipBuffer);
 #endif // ENABLE_CLIPPING
-#endif // !PLS_BLEND_SRC_OVER
+#endif // !PLS_BLEND_SRC_OVER && !RIVE_NVN_PLS_CLIP_RGBA8
 PLS_DECLUI_ATOMIC(COVERAGE_PLANE_IDX, coverageAtomicBuffer);
 PLS_BLOCK_END
 
@@ -373,7 +373,7 @@ INLINE void apply_clip(uint clipID,
                        CLIP_VALUE_TYPE clipData,
                        INOUT(half) coverage)
 {
-#ifdef @PLS_BLEND_SRC_OVER
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
     // The clipID is packed into r & g of clipData. Use a fuzzy equality test
     // since we lose precision when the clip value gets stored to and from the
     // attachment.
@@ -452,7 +452,7 @@ INLINE void resolve_paint(uint pathID,
         if (@ENABLE_CLIPPING && paintType == CLIP_UPDATE_PAINT_TYPE)
         {
 #ifndef @RESOLVE_PLS
-#ifdef @PLS_BLEND_SRC_OVER
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
             // This was actually a clip update. fragColorOut contains the packed
             // clipID.
             fragClipOut.rg = fragColorOut.ba; // Pack the clipID into r & g.
@@ -524,7 +524,7 @@ INLINE void blend_pls_color_src_over(half4 fragColorOut PLS_CONTEXT_DECL)
 #if defined(@ENABLE_CLIPPING) && !defined(@RESOLVE_PLS)
 INLINE void emit_pls_clip(CLIP_VALUE_TYPE fragClipOut PLS_CONTEXT_DECL)
 {
-#ifdef @PLS_BLEND_SRC_OVER
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
     PLS_STORE4F(clipBuffer, fragClipOut);
 #else
     if (fragClipOut != 0u)
@@ -852,7 +852,11 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
 #ifdef @ENABLE_CLIPPING
     if (@ENABLE_CLIPPING)
     {
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
+        PLS_STORE4F(clipBuffer, make_half4(.0));
+#else
         PLS_STOREUI(clipBuffer, 0u);
+#endif
     }
 #endif
 #ifdef @FIXED_FUNCTION_COLOR_OUTPUT

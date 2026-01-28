@@ -400,6 +400,10 @@
 #extension GL_ARB_fragment_shader_interlock : require
 #define PLS_INTERLOCK_BEGIN beginInvocationInterlockARB()
 #define PLS_INTERLOCK_END endInvocationInterlockARB()
+#elif defined(GL_NV_fragment_shader_interlock)
+#extension GL_NV_fragment_shader_interlock : require
+#define PLS_INTERLOCK_BEGIN beginInvocationInterlockNV()
+#define PLS_INTERLOCK_END endInvocationInterlockNV()
 #elif defined(GL_INTEL_fragment_shader_ordering)
 #extension GL_INTEL_fragment_shader_ordering : require
 #define PLS_INTERLOCK_BEGIN beginFragmentShaderOrderingINTEL()

@@ -108,4 +108,10 @@ do
         -- emscripten and unavailable on mobile.
         kind('None')
     end
+
+    filter({ 'options:for_switch' })
+    do
+        kind('None')
+        removefiles({ '**' })
+    end
 end

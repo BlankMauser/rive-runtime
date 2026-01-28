@@ -73,6 +73,19 @@ newoption({
 })
 
 newoption({
+    trigger = 'nvn_safe_objects',
+    description = 'oversize NVN wrapper objects to avoid ABI mismatches',
+})
+newoption({
+    trigger = 'nvn_addr_fallback',
+    description = 'enable NVN symbol address fallbacks',
+})
+newoption({
+    trigger = 'nvn_logs',
+    description = 'enable NVN runtime logs',
+})
+
+newoption({
     trigger = 'android_api',
     description = 'Target Android API version number',
     default = '21',
@@ -149,6 +162,16 @@ if _OPTIONS['with_optick'] then
     RIVE_OPTICK_URL = 'bombomby/optick'
     RIVE_OPTICK_VERSION = '1.4.0.0'
 end 
+
+if _OPTIONS['nvn_safe_objects'] then
+    defines({ 'RIVE_NVN_SAFE_OBJECTS' })
+end
+if _OPTIONS['nvn_addr_fallback'] then
+    defines({ 'RIVE_NVN_ADDR_FALLBACK=1' })
+end
+if _OPTIONS['nvn_logs'] then
+    defines({ 'RIVE_NVN_ENABLE_LOGS=1' })
+end
 
 location(RIVE_BUILD_OUT)
 targetdir(RIVE_BUILD_OUT)
@@ -603,6 +626,9 @@ if _OPTIONS['for_switch'] then
     architecture('arm64')
 
     defines({ 'RIVE_NO_ARM_NEON' })
+    defines({ 'RIVE_NVN_ENABLE_RASTER_ORDERING=0' })
+    defines({ 'RIVE_NVN_FORCE_RASTER_ORDERING=0' })
+    defines({ 'RIVE_NVN_FORCE_COPY_TEXTURE=0' })
 
     local switch_includes = {}
     local cxx_base = devkita64 .. '/aarch64-none-elf/include/c++'
@@ -622,6 +648,10 @@ if _OPTIONS['for_switch'] then
         local gcc_root = gcc_versions[#gcc_versions]
         table.insert(switch_includes, gcc_root .. '/include')
         table.insert(switch_includes, gcc_root .. '/include-fixed')
+    end
+    local switch_sdk_include = path.getabsolute(_WORKING_DIR .. '/dependencies/switch/include')
+    if os.isdir(switch_sdk_include) then
+        table.insert(switch_includes, switch_sdk_include)
     end
 
     if #switch_includes > 0 then

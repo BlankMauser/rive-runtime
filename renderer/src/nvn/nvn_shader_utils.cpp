@@ -5,11 +5,15 @@
 #include "generated/shaders/common.glsl.hpp"
 #include "generated/shaders/constants.glsl.hpp"
 #include "generated/shaders/draw_path_common.glsl.hpp"
-#include "generated/shaders/glsl.exports.h"
+#include "generated/shaders/glsl.glsl.exports.h"
 #include "generated/shaders/glsl.glsl.hpp"
 
 #include <sstream>
 #include <vector>
+
+#ifndef RIVE_NVN_PLS_CLIP_RGBA8
+#define RIVE_NVN_PLS_CLIP_RGBA8 1
+#endif
 
 namespace rive::gpu::nvn
 {
@@ -85,6 +89,7 @@ static void append_draw_type_defines(std::vector<const char*>& defines,
             break;
         case DrawType::renderPassInitialize:
             defines.push_back(GLSL_INITIALIZE_PLS);
+            defines.push_back(GLSL_DRAW_RENDER_TARGET_UPDATE_BOUNDS);
             if (miscFlags & ShaderMiscFlags::storeColorClear)
             {
                 defines.push_back(GLSL_STORE_COLOR_CLEAR);
@@ -132,6 +137,16 @@ std::string BuildAtomicShaderSource(ShaderStage stage,
     defines.reserve(32);
 
     defines.push_back(GLSL_USING_PLS_STORAGE_TEXTURES);
+    defines.push_back(GLSL_PLS_IMPL_STORAGE_TEXTURE);
+#if RIVE_NVN_PLS_CLIP_RGBA8
+    // Keep clip buffer RGBA8 without changing color blending behavior.
+    defines.push_back("RIVE_NVN_PLS_CLIP_RGBA8");
+#endif
+    if (params.caps.supportsFragmentShaderInterlock)
+    {
+        // Enable NV_fragment_shader_interlock so PLS atomics serialize.
+        defines.push_back("GL_NV_fragment_shader_interlock");
+    }
 
     append_shader_misc_defines(defines, params.miscFlags);
     append_shader_feature_defines(defines,

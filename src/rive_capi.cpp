@@ -1,9 +1,14 @@
 #include "rive/capi.h"
+#include "rive/capi_internal.hpp"
 
 #include "rive/animation/linear_animation_instance.hpp"
 #include "rive/animation/state_machine_instance.hpp"
 #include "rive/artboard.hpp"
 #include "rive/file.hpp"
+#include "rive/layout.hpp"
+#include "rive/math/aabb.hpp"
+#include "rive/math/mat2d.hpp"
+#include "rive/renderer.hpp"
 #include "rive/span.hpp"
 #include "utils/no_op_factory.hpp"
 
@@ -20,31 +25,54 @@ using rive::NoOpFactory;
 using rive::StateMachineInstance;
 using rive::Span;
 
-struct RiveFile
+static void write_aabb(const rive::AABB& bounds, RiveAABB* out_bounds)
 {
-    std::shared_ptr<rive::Factory> factory;
-    rive::rcp<File> file;
-};
+    if (!out_bounds)
+    {
+        return;
+    }
+    out_bounds->min_x = bounds.minX;
+    out_bounds->min_y = bounds.minY;
+    out_bounds->max_x = bounds.maxX;
+    out_bounds->max_y = bounds.maxY;
+}
 
-struct RiveArtboard
+static rive::AABB to_aabb(RiveAABB bounds)
 {
-    std::shared_ptr<rive::Factory> factory;
-    std::shared_ptr<rive::ArtboardInstance> artboard;
-};
+    return rive::AABB(bounds.min_x,
+                      bounds.min_y,
+                      bounds.max_x,
+                      bounds.max_y);
+}
 
-struct RiveLinearAnimation
+static rive::Fit to_fit(RiveFit fit)
 {
-    std::shared_ptr<rive::Factory> factory;
-    std::shared_ptr<rive::ArtboardInstance> artboard;
-    std::unique_ptr<LinearAnimationInstance> animation;
-};
+    switch (fit)
+    {
+        case RIVE_FIT_FILL:
+            return rive::Fit::fill;
+        case RIVE_FIT_CONTAIN:
+            return rive::Fit::contain;
+        case RIVE_FIT_COVER:
+            return rive::Fit::cover;
+        case RIVE_FIT_FIT_WIDTH:
+            return rive::Fit::fitWidth;
+        case RIVE_FIT_FIT_HEIGHT:
+            return rive::Fit::fitHeight;
+        case RIVE_FIT_NONE:
+            return rive::Fit::none;
+        case RIVE_FIT_SCALE_DOWN:
+            return rive::Fit::scaleDown;
+        case RIVE_FIT_LAYOUT:
+            return rive::Fit::layout;
+    }
+    return rive::Fit::contain;
+}
 
-struct RiveStateMachine
+static rive::Alignment to_alignment(RiveAlignment alignment)
 {
-    std::shared_ptr<rive::Factory> factory;
-    std::shared_ptr<rive::ArtboardInstance> artboard;
-    std::unique_ptr<StateMachineInstance> machine;
-};
+    return rive::Alignment(alignment.x, alignment.y);
+}
 
 static RiveImportResult to_c_result(ImportResult result)
 {
@@ -289,6 +317,53 @@ float rive_artboard_original_height(const RiveArtboard* artboard)
     }
 
     return artboard->artboard->originalHeight();
+}
+
+int rive_artboard_bounds(const RiveArtboard* artboard, RiveAABB* out_bounds)
+{
+    if (!artboard || !artboard->artboard || !out_bounds)
+    {
+        return 0;
+    }
+
+    write_aabb(artboard->artboard->bounds(), out_bounds);
+    return 1;
+}
+
+int rive_artboard_world_bounds(const RiveArtboard* artboard,
+                               RiveAABB* out_bounds)
+{
+    if (!artboard || !artboard->artboard || !out_bounds)
+    {
+        return 0;
+    }
+
+    write_aabb(artboard->artboard->worldBounds(), out_bounds);
+    return 1;
+}
+
+int rive_compute_alignment(RiveFit fit,
+                           RiveAlignment alignment,
+                           RiveAABB frame,
+                           RiveAABB content,
+                           float scale_factor,
+                           RiveMat2D* out_matrix)
+{
+    if (!out_matrix)
+    {
+        return 0;
+    }
+
+    rive::Mat2D result = rive::computeAlignment(to_fit(fit),
+                                                to_alignment(alignment),
+                                                to_aabb(frame),
+                                                to_aabb(content),
+                                                scale_factor);
+    for (int i = 0; i < 6; ++i)
+    {
+        out_matrix->values[i] = result[i];
+    }
+    return 1;
 }
 
 size_t rive_artboard_animation_count(const RiveArtboard* artboard)

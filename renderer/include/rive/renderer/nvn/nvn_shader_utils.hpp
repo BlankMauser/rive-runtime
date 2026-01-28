@@ -29,6 +29,7 @@ struct ShaderBuildCaps
     bool needsBaseInstanceUniform = false;
     bool needsFloatingPointTessellationTexture = false;
     bool isMali = false;
+    bool supportsFragmentShaderInterlock = false;
 };
 
 struct ShaderBuildParams

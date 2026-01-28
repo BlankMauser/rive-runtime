@@ -4,13 +4,12 @@
 # build projects
 subninja ./build_rive_harfbuzz.ninja
 subninja ./build_rive_sheenbidi.ninja
-subninja ./build_miniaudio.ninja
 subninja ./build_rive_yoga.ninja
 subninja ./build_luau_vm.ninja
 subninja ./build_rive.ninja
 
 # targets
-build default: phony rive_harfbuzz rive_sheenbidi miniaudio rive_yoga luau_vm rive
+build default: phony rive_harfbuzz rive_sheenbidi rive_yoga luau_vm rive
 
 # default target
 default default

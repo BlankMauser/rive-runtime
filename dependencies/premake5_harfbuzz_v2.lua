@@ -275,6 +275,15 @@ do
         optimize('Size')
     end
 
+    filter({ 'options:for_switch', 'toolset:not msc', 'files:**/src/hb-subset*.cc' })
+    do
+        buildoptions({
+            '-O0',
+            '-fno-vectorize',
+            '-fno-slp-vectorize',
+        })
+    end
+
     filter({ 'options:not no-harfbuzz-renames' })
     do
         includedirs({ './' })

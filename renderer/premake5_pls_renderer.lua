@@ -47,11 +47,28 @@ do
 end
 
 if _OPTIONS['with_nvn'] then
-    defines({ 'RIVE_NVN' })
-    nvn_headers = path.getabsolute(RIVE_RUNTIME_DIR .. '/build/dependencies/nvn/include')
-    if not os.isdir(nvn_headers) then
-        error('NVN headers not found at ' .. nvn_headers)
+    defines({ 'RIVE_NVN', 'SL_MEM_SIZE=0x10000000' })
+    local nvn_headers_cpp =
+        path.getabsolute(RIVE_RUNTIME_DIR .. '/build/dependencies/nvn/include')
+    local nvn_headers_c =
+        path.getabsolute(RIVE_RUNTIME_DIR .. '/dependencies/switch/include')
+    local include_dirs = {}
+
+    if os.isdir(nvn_headers_cpp) then
+        table.insert(include_dirs, nvn_headers_cpp)
     end
+
+    if os.isdir(nvn_headers_c) and
+        os.isfile(path.join(nvn_headers_c, 'nvn', 'nvn.hpp')) then
+        table.insert(include_dirs, nvn_headers_c)
+    end
+
+    if #include_dirs == 0 then
+        error('NVN headers not found at ' .. nvn_headers_cpp .. ' or ' ..
+                  nvn_headers_c)
+    end
+
+    nvn_headers = include_dirs
 end
 
 newoption({
@@ -215,8 +232,13 @@ do
             'src/shaders/*.frag', 'src/shaders/*.vert', 'include/**.hpp', 'include/**.h' })
 
     if _OPTIONS['with_nvn'] then
-        externalincludedirs({ nvn_headers })
-        files({ 'src/nvn/**.cpp', 'include/rive/renderer/nvn/**.hpp' })
+        externalincludedirs(nvn_headers)
+        files({
+            'src/nvn/**.cpp',
+            'include/rive/renderer/nvn/**.hpp',
+            RIVE_RUNTIME_DIR .. '/dependencies/switch/source/nvn/nvn.cpp',
+            RIVE_RUNTIME_DIR .. '/dependencies/switch/source/gfx/managed/*.cpp',
+        })
     end
 
 

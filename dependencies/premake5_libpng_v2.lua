@@ -21,6 +21,14 @@ do
     kind('StaticLib')
     optimize('Speed') -- Always optimize image encoding/decoding, even in debug builds.
     includedirs({ libpng, zlib, '%{cfg.targetdir}/include/libpng' })
+    filter({ 'options:for_switch' })
+    do
+        defines({
+            'PNG_ARM_NEON_OPT=0',
+            'PNG_ARM_NEON_IMPLEMENTATION=0',
+        })
+    end
+    filter({})
     files({
         libpng .. '/png.c',
         libpng .. '/pngerror.c',
@@ -45,6 +53,14 @@ do
             libpng .. '/arm/filter_neon_intrinsics.c',
             libpng .. '/arm/palette_neon_intrinsics.c',
         })
+        filter({ 'options:for_switch' })
+        do
+            removefiles({
+                libpng .. '/arm/filter_neon_intrinsics.c',
+                libpng .. '/arm/palette_neon_intrinsics.c',
+            })
+        end
+        filter({})
     end
 end
 
