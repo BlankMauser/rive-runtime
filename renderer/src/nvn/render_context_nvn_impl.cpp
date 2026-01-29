@@ -798,10 +798,10 @@ public:
         }
 
         nvn_api::MemoryPoolBuilder pool_builder;
-        pool_builder.SetDefaults()
-            .SetDevice(device)
-            .SetFlags(flags)
-            .SetStorage(m_memory, aligned_size);
+        pool_builder.SetDefaults();
+        pool_builder.SetDevice(device);
+        pool_builder.SetFlags(flags);
+        pool_builder.SetStorage(m_memory, aligned_size);
         if (!m_pool.Initialize(&pool_builder))
         {
             debug_log("[rive] buffer pool init failed size=%zu aligned=%zu flags=0x%x",
@@ -945,8 +945,26 @@ struct NVNTextureResource
             return false;
         }
 
+        // Some NVN producers (and some emulator backends) treat ordinary 2D textures as 2D_ARRAY with 1 layer.
+        // Our shaders are written for sampler2D / image2D, so force non-array targets to avoid descriptor/view mismatches.
+        nvn_api::TextureTarget canonical_target = new_target;
+        switch (canonical_target)
+        {
+            case nvn_api::TextureTarget::TARGET_2D_ARRAY:
+                canonical_target = nvn_api::TextureTarget::TARGET_2D;
+                break;
+            case nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE_ARRAY:
+                canonical_target = nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE;
+                break;
+            case nvn_api::TextureTarget::TARGET_CUBEMAP_ARRAY:
+                canonical_target = nvn_api::TextureTarget::TARGET_CUBEMAP;
+                break;
+            default:
+                break;
+        }
+
         if (initialized && width == new_width && height == new_height &&
-            format == new_format && flags == new_flags && target == new_target)
+            format == new_format && flags == new_flags && target == canonical_target)
         {
             return true;
         }
@@ -957,20 +975,20 @@ struct NVNTextureResource
         height = new_height;
         format = new_format;
         flags = new_flags;
-        target = new_target;
+        target = canonical_target;
         texture_id = tex_id;
         sampler_id = samp_id;
         image_id = img_id;
 
         nvn_api::TextureBuilder builder{};
-        builder.SetDefaults()
-            .SetDevice(device)
-            .SetFlags(flags)
-            .SetTarget(target)
-            .SetSize2D(width, height)
-            .SetDepth(1)
-            .SetLevels(1)
-            .SetFormat(format);
+        builder.SetDefaults();
+        builder.SetDevice(device);
+        builder.SetFlags(flags);
+        builder.SetTarget(target);
+        builder.SetSize2D(width, height);
+        builder.SetDepth(1);
+        builder.SetLevels(1);
+        builder.SetFormat(format);
 
         const size_t storage_size = builder.GetStorageSize();
         const size_t storage_alignment = builder.GetStorageAlignment();
@@ -991,10 +1009,10 @@ struct NVNTextureResource
         memory_size = storage_size;
 
         nvn_api::MemoryPoolBuilder pool_builder;
-        pool_builder.SetDefaults()
-            .SetDevice(device)
-            .SetFlags(pool_flags)
-            .SetStorage(memory, memory_size);
+        pool_builder.SetDefaults();
+        pool_builder.SetDevice(device);
+        pool_builder.SetFlags(pool_flags);
+        pool_builder.SetStorage(memory, memory_size);
         if (!pool.Initialize(&pool_builder))
         {
             debug_log(
@@ -1395,10 +1413,10 @@ private:
         }
 
         nvn_api::MemoryPoolBuilder pool_builder;
-        pool_builder.SetDefaults()
-            .SetDevice(device)
-            .SetFlags(kShaderPoolFlags)
-            .SetStorage(m_code_memory, m_code_memory_size);
+        pool_builder.SetDefaults();
+        pool_builder.SetDevice(device);
+        pool_builder.SetFlags(kShaderPoolFlags);
+        pool_builder.SetStorage(m_code_memory, m_code_memory_size);
         if (!m_code_pool.Initialize(&pool_builder))
         {
             return false;
@@ -3091,11 +3109,11 @@ bool RenderContextNVNImpl::ensure_descriptor_pools(nvn_api::Device* device)
     std::memset(m_descriptorMemory, 0, total_bytes);
 
     nvn_api::MemoryPoolBuilder builder;
-    builder.SetDefaults()
-        .SetDevice(device)
-        .SetFlags(nvn_api::MemoryPoolFlags::CPU_UNCACHED |
-                  nvn_api::MemoryPoolFlags::GPU_CACHED)
-        .SetStorage(m_descriptorMemory, total_bytes);
+    builder.SetDefaults();
+    builder.SetDevice(device);
+    builder.SetFlags(nvn_api::MemoryPoolFlags::CPU_UNCACHED |
+                nvn_api::MemoryPoolFlags::GPU_CACHED);
+    builder.SetStorage(m_descriptorMemory, total_bytes);
 
     if (!m_descriptorPool.Initialize(&builder))
     {
@@ -3226,14 +3244,14 @@ int RenderContextNVNImpl::ensure_sampler(const ImageSampler& sampler,
         }
 
         nvn_api::SamplerBuilder builder{};
-        builder.SetDefaults()
-            .SetDevice(device)
-            .SetMinMagFilter(min_filter, mag_filter)
-            .SetWrapMode(map_wrap(sampler.wrapX),
+        builder.SetDefaults();
+        builder.SetDevice(device);
+        builder.SetMinMagFilter(min_filter, mag_filter);
+        builder.SetWrapMode(map_wrap(sampler.wrapX),
                          map_wrap(sampler.wrapY),
-                         nvn_api::WrapMode::CLAMP_TO_EDGE)
-            .SetLodClamp(0.0f, 0.0f)
-            .SetLodBias(rive::gpu::MIP_MAP_LOD_BIAS);
+                         nvn_api::WrapMode::CLAMP_TO_EDGE);
+        builder.SetLodClamp(0.0f, 0.0f);
+        builder.SetLodBias(rive::gpu::MIP_MAP_LOD_BIAS);
 
         auto sampler_obj = std::make_unique<nvn_api::Sampler>();
         if (!sampler_obj->Initialize(&builder))

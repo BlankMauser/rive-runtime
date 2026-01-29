@@ -43,7 +43,7 @@
 #endif
 
 #ifndef RIVE_NVN_FORCE_COPY_TEXTURE
-#define RIVE_NVN_FORCE_COPY_TEXTURE 0
+#define RIVE_NVN_FORCE_COPY_TEXTURE 1
 #endif
 
 // Hooking nvnWindowAcquireTexture can crash some emulators; keep it off by default.
@@ -1413,9 +1413,9 @@ static void overlay_command_memory_callback(nvn::CommandBuffer* cmd,
         }
 
         nvn::MemoryPoolBuilder pool_builder;
-        pool_builder.SetDefaults()
-            .SetDevice(g_device)
-            .SetFlags(nvn::MemoryPoolFlags::CPU_UNCACHED |
+        pool_builder.SetDefaults();
+        pool_builder.SetDevice(g_device);
+        pool_builder.SetFlags(nvn::MemoryPoolFlags::CPU_UNCACHED |
                       nvn::MemoryPoolFlags::GPU_CACHED)
             .SetStorage(block->memory, size);
         if (!block->pool.Initialize(&pool_builder)) {
@@ -1734,7 +1734,13 @@ bool ensure_offscreen_target(OffscreenTarget* target,
     if (flags_value == 0) {
         flags_value = static_cast<int>(nvn::TextureFlags::COMPRESSIBLE);
     }
-    flags_value |= static_cast<int>(nvn::TextureFlags::IMAGE);
+    // Offscreen targets are sampled for compositing; force SAMPLED (and the copy flags we need) here.
+    flags_value |= static_cast<int>(nvn::TextureFlags::SAMPLED) |
+                   static_cast<int>(nvn::TextureFlags::COPY_SRC) |
+                   static_cast<int>(nvn::TextureFlags::COPY_DEST);
+
+    // NOTE: Do NOT set TextureFlags::IMAGE here. The atomic/PLS paths use dedicated image textures in
+    // RenderContextNVNImpl, and marking the offscreen target as an image can cause emulator-side layout mismatches.
     if (samples > 1) {
         if (target_type == nvn::TextureTarget::TARGET_2D) {
             target_type = nvn::TextureTarget::TARGET_2D_MULTISAMPLE;
@@ -1782,19 +1788,19 @@ bool ensure_offscreen_target(OffscreenTarget* target,
     reset_offscreen_target(target);
 
     nvn::TextureBuilder builder{};
-    builder.SetDefaults()
-        .SetDevice(g_device)
-        .SetFlags(flags)
-        .SetTarget(target_type)
-        .SetSize2D(width, height)
-        .SetDepth(depth)
-        .SetLevels(levels)
-        .SetFormat(format)
-        .SetSwizzle(nvn::TextureSwizzle::R,
-                    nvn::TextureSwizzle::G,
-                    nvn::TextureSwizzle::B,
-                    nvn::TextureSwizzle::A)
-        .SetSamples(samples > 1 ? samples : 0);
+    builder.SetDefaults();
+    builder.SetDevice(g_device);
+    builder.SetFlags(flags);
+    builder.SetTarget(target_type);
+    builder.SetSize2D(width, height);
+    builder.SetDepth(depth);
+    builder.SetLevels(levels);
+    builder.SetFormat(format);
+    builder.SetSwizzle(nvn::TextureSwizzle::R,
+                nvn::TextureSwizzle::G,
+                nvn::TextureSwizzle::B,
+                nvn::TextureSwizzle::A);
+    builder.SetSamples(samples > 1 ? samples : 0);
     if (stride > 0) {
         builder.SetStride(stride);
     }
@@ -1814,10 +1820,10 @@ bool ensure_offscreen_target(OffscreenTarget* target,
     }
 
     nvn::MemoryPoolBuilder pool_builder;
-    pool_builder.SetDefaults()
-        .SetDevice(g_device)
-        .SetFlags(pool_flags)
-        .SetStorage(memory, storage_size);
+    pool_builder.SetDefaults();
+    pool_builder.SetDevice(g_device);
+    pool_builder.SetFlags(pool_flags);
+    pool_builder.SetStorage(memory, storage_size);
     if (!target->pool.Initialize(&pool_builder)) {
         GlobalAllocator::Free(memory);
         set_error("offscreen pool init failed");
@@ -1847,17 +1853,17 @@ bool ensure_offscreen_target(OffscreenTarget* target,
     target->initialized = true;
 
     if (want_depth) {
-        nvn::TextureBuilder depth_builder{};
-        depth_builder.SetDefaults()
-            .SetDevice(g_device)
-            .SetFlags(depth_flags)
-            .SetTarget(depth_target)
-            .SetSize2D(width, height)
-            .SetDepth(depth)
-            .SetLevels(levels)
-            .SetFormat(depth_format)
-            .SetSamples(samples > 1 ? samples : 0)
-            .SetDepthStencilMode(nvn::TextureDepthStencilMode::DEPTH);
+    nvn::TextureBuilder depth_builder{};
+    depth_builder.SetDefaults();
+    depth_builder.SetDevice(g_device);
+    depth_builder.SetFlags(depth_flags);
+    depth_builder.SetTarget(depth_target);
+    depth_builder.SetSize2D(width, height);
+    depth_builder.SetDepth(depth);
+    depth_builder.SetLevels(levels);
+    depth_builder.SetFormat(depth_format);
+    depth_builder.SetSamples(samples > 1 ? samples : 0);
+    depth_builder.SetDepthStencilMode(nvn::TextureDepthStencilMode::DEPTH);
 
         const size_t depth_storage_size = depth_builder.GetStorageSize();
         const size_t depth_storage_alignment =
@@ -1877,10 +1883,10 @@ bool ensure_offscreen_target(OffscreenTarget* target,
             nvn::MemoryPoolFlags::COMPRESSIBLE;
 
         nvn::MemoryPoolBuilder depth_pool_builder;
-        depth_pool_builder.SetDefaults()
-            .SetDevice(g_device)
-            .SetFlags(depth_pool_flags)
-            .SetStorage(depth_memory, depth_storage_size);
+        depth_pool_builder.SetDefaults();
+        depth_pool_builder.SetDevice(g_device);
+        depth_pool_builder.SetFlags(depth_pool_flags);
+        depth_pool_builder.SetStorage(depth_memory, depth_storage_size);
         if (!target->depth_pool.Initialize(&depth_pool_builder)) {
             GlobalAllocator::Free(depth_memory);
             reset_offscreen_target(target);
@@ -1950,12 +1956,12 @@ bool ensure_blit_state(nvn::Texture* texture)
         }
 
         nvn::SamplerBuilder sampler_builder{};
-        sampler_builder.SetDefaults()
-            .SetDevice(g_device)
-            .SetMinMagFilter(nvn::MinFilter::LINEAR, nvn::MagFilter::LINEAR)
-            .SetWrapMode(nvn::WrapMode::CLAMP,
-                         nvn::WrapMode::CLAMP,
-                         nvn::WrapMode::CLAMP);
+        sampler_builder.SetDefaults();
+        sampler_builder.SetDevice(g_device);
+        sampler_builder.SetMinMagFilter(nvn::MinFilter::LINEAR, nvn::MagFilter::LINEAR)
+        sampler_builder.SetWrapMode(nvn::WrapMode::CLAMP_TO_EDGE,
+                        nvn::WrapMode::CLAMP_TO_EDGE,
+                        nvn::WrapMode::CLAMP_TO_EDGE);
         if (!g_blit.sampler.Initialize(&sampler_builder)) {
             set_error("blit sampler init failed");
             return false;
