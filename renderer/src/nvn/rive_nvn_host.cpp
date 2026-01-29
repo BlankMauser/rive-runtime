@@ -43,7 +43,7 @@
 #endif
 
 #ifndef RIVE_NVN_FORCE_COPY_TEXTURE
-#define RIVE_NVN_FORCE_COPY_TEXTURE 1
+#define RIVE_NVN_FORCE_COPY_TEXTURE 0
 #endif
 
 // Hooking nvnWindowAcquireTexture can crash some emulators; keep it off by default.
@@ -135,13 +135,13 @@ namespace {
 nvn::TextureTarget view_target_for(nvn::TextureTarget target)
 {
     switch (target) {
-        case nvn::TextureTarget::TARGET_2D_ARRAY:
-        case nvn::TextureTarget::TARGET_CUBEMAP_ARRAY:
-            return nvn::TextureTarget::TARGET_2D;
+        case nvn::TextureTarget::TARGET_2D:
+        case nvn::TextureTarget::TARGET_2D_MULTISAMPLE:
+            return target;
         case nvn::TextureTarget::TARGET_2D_MULTISAMPLE_ARRAY:
             return nvn::TextureTarget::TARGET_2D_MULTISAMPLE;
         default:
-            return target;
+            return nvn::TextureTarget::TARGET_2D;
     }
 }
 
@@ -1730,42 +1730,40 @@ bool ensure_offscreen_target(OffscreenTarget* target,
     }
 
     int flags_value = static_cast<int>(window_texture->GetFlags());
-    flags_value &= ~static_cast<int>(nvn::TextureFlags::DISPLAY);
-    if (flags_value == 0) {
-        flags_value = static_cast<int>(nvn::TextureFlags::COMPRESSIBLE);
-    }
-    // Offscreen targets are sampled for compositing; force SAMPLED (and the copy flags we need) here.
-    flags_value |= static_cast<int>(nvn::TextureFlags::SAMPLED) |
-                   static_cast<int>(nvn::TextureFlags::COPY_SRC) |
-                   static_cast<int>(nvn::TextureFlags::COPY_DEST);
+       flags_value &= ~static_cast<int>(nvn::TextureFlags::DISPLAY);
+       flags_value |= static_cast<int>(nvn::TextureFlags::IMAGE);
+   
+       // NOTE: Do not force COMPRESSIBLE here.
+       // The NVN spec warns that reusing memory for compressible textures requires clearing
+       // before GPU read/write, otherwise behavior is undefined (including hangs). When the
+       // host allocator reuses pool memory, auto-enabling COMPRESSIBLE can produce artifacts
+       // or crashes on some implementations/emulators.
+       if (samples > 1) {
+           if (target_type == nvn::TextureTarget::TARGET_2D) {
+               target_type = nvn::TextureTarget::TARGET_2D_MULTISAMPLE;
+           } else if (target_type == nvn::TextureTarget::TARGET_2D_ARRAY) {
+               target_type = nvn::TextureTarget::TARGET_2D_MULTISAMPLE;
+           }
+           levels = 1;
+           if (stride > 0) {
+               stride = 0;
+               flags_value &=
+                   ~static_cast<int>(nvn::TextureFlags::LINEAR_RENDER_TARGET);
+           }
+           flags_value &= ~static_cast<int>(nvn::TextureFlags::LINEAR);
+       }
+       if (stride > 0) {
+           flags_value |= static_cast<int>(nvn::TextureFlags::LINEAR_RENDER_TARGET);
+       }
+       const nvn::TextureFlags flags = nvn::TextureFlags(flags_value);
+       const bool want_depth = needs_depth;
+       const nvn::Format depth_format = nvn::Format::DEPTH24_STENCIL8;
+       int depth_flags_value = static_cast<int>(nvn::TextureFlags::COMPRESSIBLE) |
+                               static_cast<int>(nvn::TextureFlags::ADAPTIVE_ZCULL);
+       nvn::TextureTarget depth_target = target_type;
+       const nvn::TextureFlags depth_flags =
+           nvn::TextureFlags(depth_flags_value);
 
-    // NOTE: Do NOT set TextureFlags::IMAGE here. The atomic/PLS paths use dedicated image textures in
-    // RenderContextNVNImpl, and marking the offscreen target as an image can cause emulator-side layout mismatches.
-    if (samples > 1) {
-        if (target_type == nvn::TextureTarget::TARGET_2D) {
-            target_type = nvn::TextureTarget::TARGET_2D_MULTISAMPLE;
-        } else if (target_type == nvn::TextureTarget::TARGET_2D_ARRAY) {
-            target_type = nvn::TextureTarget::TARGET_2D_MULTISAMPLE;
-        }
-        levels = 1;
-        if (stride > 0) {
-            stride = 0;
-            flags_value &=
-                ~static_cast<int>(nvn::TextureFlags::LINEAR_RENDER_TARGET);
-        }
-        flags_value &= ~static_cast<int>(nvn::TextureFlags::LINEAR);
-    }
-    if (stride > 0) {
-        flags_value |= static_cast<int>(nvn::TextureFlags::LINEAR_RENDER_TARGET);
-    }
-    const nvn::TextureFlags flags = nvn::TextureFlags(flags_value);
-    const bool want_depth = needs_depth;
-    const nvn::Format depth_format = nvn::Format::DEPTH24_STENCIL8;
-    int depth_flags_value = static_cast<int>(nvn::TextureFlags::COMPRESSIBLE) |
-                            static_cast<int>(nvn::TextureFlags::ADAPTIVE_ZCULL);
-    nvn::TextureTarget depth_target = target_type;
-    const nvn::TextureFlags depth_flags =
-        nvn::TextureFlags(depth_flags_value);
 
     if (target->initialized &&
         target->width == static_cast<uint32_t>(width) &&
@@ -1958,7 +1956,7 @@ bool ensure_blit_state(nvn::Texture* texture)
         nvn::SamplerBuilder sampler_builder{};
         sampler_builder.SetDefaults();
         sampler_builder.SetDevice(g_device);
-        sampler_builder.SetMinMagFilter(nvn::MinFilter::LINEAR, nvn::MagFilter::LINEAR)
+        sampler_builder.SetMinMagFilter(nvn::MinFilter::LINEAR, nvn::MagFilter::LINEAR);
         sampler_builder.SetWrapMode(nvn::WrapMode::CLAMP_TO_EDGE,
                         nvn::WrapMode::CLAMP_TO_EDGE,
                         nvn::WrapMode::CLAMP_TO_EDGE);
@@ -2164,7 +2162,9 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
             }
         }
         uint32_t desired_w =
-            art_w > 0.0f ? static_cast<uint32_t>(std::ceil(art_w * scale)) : 0;
+            art_w > 0.0f
+                ? ((static_cast<uint32_t>(std::ceil(art_w * scale)) + 31) & ~31)
+                : 0;
         uint32_t desired_h =
             art_h > 0.0f ? static_cast<uint32_t>(std::ceil(art_h * scale)) : 0;
         if (desired_w == 0 || desired_w > window_width) {

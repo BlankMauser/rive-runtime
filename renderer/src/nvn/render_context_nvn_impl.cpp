@@ -21,7 +21,7 @@
 #endif
 
 #ifndef RIVE_NVN_ENABLE_RASTER_ORDERING
-#define RIVE_NVN_ENABLE_RASTER_ORDERING 0
+#define RIVE_NVN_ENABLE_RASTER_ORDERING 1
 #endif
 
 // Use RGBA8 clip plane to avoid integer storage-image issues on some backends.
@@ -69,13 +69,13 @@ nvn_api::TextureTarget view_target_for(nvn_api::TextureTarget target)
 {
     switch (target)
     {
-        case nvn_api::TextureTarget::TARGET_2D_ARRAY:
-        case nvn_api::TextureTarget::TARGET_CUBEMAP_ARRAY:
-            return nvn_api::TextureTarget::TARGET_2D;
+        case nvn_api::TextureTarget::TARGET_2D:
+        case nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE:
+            return target;
         case nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE_ARRAY:
             return nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE;
         default:
-            return target;
+            return nvn_api::TextureTarget::TARGET_2D;
     }
 }
 
@@ -3250,7 +3250,6 @@ int RenderContextNVNImpl::ensure_sampler(const ImageSampler& sampler,
         builder.SetWrapMode(map_wrap(sampler.wrapX),
                          map_wrap(sampler.wrapY),
                          nvn_api::WrapMode::CLAMP_TO_EDGE);
-        builder.SetLodClamp(0.0f, 0.0f);
         builder.SetLodBias(rive::gpu::MIP_MAP_LOD_BIAS);
 
         auto sampler_obj = std::make_unique<nvn_api::Sampler>();
@@ -4193,7 +4192,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
     if (pls_width > 0 && pls_height > 0)
     {
         const nvn_api::TextureFlags pls_flags =
-            nvn_api::TextureFlags::IMAGE | nvn_api::TextureFlags::LINEAR_RENDER_TARGET;
+            nvn_api::TextureFlags::IMAGE;
         int color_id = m_plsColorTexture.texture_id >= 0
                            ? m_plsColorTexture.texture_id
                            : m_nextTextureId++;
@@ -4291,7 +4290,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
     if (coverage_width > 0 && coverage_height > 0)
     {
         const nvn_api::TextureFlags pls_flags =
-            nvn_api::TextureFlags::IMAGE | nvn_api::TextureFlags::LINEAR_RENDER_TARGET;
+            nvn_api::TextureFlags::IMAGE;
         int coverage_id = m_plsCoverageTexture.texture_id >= 0
                               ? m_plsCoverageTexture.texture_id
                               : m_nextTextureId++;
