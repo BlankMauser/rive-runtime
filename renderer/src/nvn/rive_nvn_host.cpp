@@ -15,7 +15,7 @@
 #endif
 
 #ifndef RIVE_NVN_ENABLE_LOGS
-#define RIVE_NVN_ENABLE_LOGS 0
+#define RIVE_NVN_ENABLE_LOGS 1
 #endif
 
 #ifndef RIVE_NVN_ENABLE_TOGGLE_DEBUG_CLEAR
@@ -43,7 +43,15 @@
 #endif
 
 #ifndef RIVE_NVN_FORCE_COPY_TEXTURE
-#define RIVE_NVN_FORCE_COPY_TEXTURE 0
+#define RIVE_NVN_FORCE_COPY_TEXTURE 1
+#endif
+
+#ifndef RIVE_NVN_ENABLE_BIND_LOGS
+#define RIVE_NVN_ENABLE_BIND_LOGS 0
+#endif
+
+#ifndef RIVE_NVN_DISABLE_PLS
+#define RIVE_NVN_DISABLE_PLS 1
 #endif
 
 // Hooking nvnWindowAcquireTexture can crash some emulators; keep it off by default.
@@ -52,7 +60,11 @@
 #endif
 
 #ifndef RIVE_NVN_FORCE_MSAA_SAMPLES
+#if RIVE_NVN_DISABLE_PLS
+#define RIVE_NVN_FORCE_MSAA_SAMPLES 4
+#else
 #define RIVE_NVN_FORCE_MSAA_SAMPLES 0
+#endif
 #endif
 
 #ifndef RIVE_NVN_ADDR_FALLBACK
@@ -180,6 +192,10 @@ constexpr const char* kCommandBufferBeginRecording = "nvnCommandBufferBeginRecor
 constexpr const char* kCommandBufferEndRecording = "nvnCommandBufferEndRecording";
 constexpr const char* kCommandBufferSetTexturePool = "nvnCommandBufferSetTexturePool";
 constexpr const char* kCommandBufferSetSamplerPool = "nvnCommandBufferSetSamplerPool";
+constexpr const char* kCommandBufferBindTexture = "nvnCommandBufferBindTexture";
+constexpr const char* kCommandBufferBindTextures = "nvnCommandBufferBindTextures";
+constexpr const char* kCommandBufferBindImage = "nvnCommandBufferBindImage";
+constexpr const char* kCommandBufferBindImages = "nvnCommandBufferBindImages";
 constexpr const char* kWindowSetCrop = "nvnWindowSetCrop";
 #if RIVE_NVN_ADDR_FALLBACK
 constexpr uintptr_t kNvnBootstrapLoaderAddr = RIVE_NVN_BOOTSTRAP_ADDR;
@@ -209,6 +225,10 @@ static nvn::NVN_TYPE(CommandBufferBeginRecording) g_command_buffer_begin_orig = 
 static nvn::NVN_TYPE(CommandBufferEndRecording) g_command_buffer_end_orig = nullptr;
 static nvn::NVN_TYPE(CommandBufferSetTexturePool) g_command_set_texture_pool_orig = nullptr;
 static nvn::NVN_TYPE(CommandBufferSetSamplerPool) g_command_set_sampler_pool_orig = nullptr;
+static nvn::NVN_TYPE(CommandBufferBindTexture) g_command_bind_texture_orig = nullptr;
+static nvn::NVN_TYPE(CommandBufferBindTextures) g_command_bind_textures_orig = nullptr;
+static nvn::NVN_TYPE(CommandBufferBindImage) g_command_bind_image_orig = nullptr;
+static nvn::NVN_TYPE(CommandBufferBindImages) g_command_bind_images_orig = nullptr;
 static nvn::NVN_TYPE(WindowSetCrop) g_window_set_crop_orig = nullptr;
 static nvn::GenericFuncPtr (*g_bootstrap_orig)(const char*) = nullptr;
 static void (*g_main_loop_orig)(uint32_t*, bool) = nullptr;
@@ -228,6 +248,8 @@ static nvn::Queue* g_queue = nullptr;
 static nvn::CommandBuffer* g_cmd_buffer = nullptr;
 static const nvn::TexturePool* g_cmd_texture_pool = nullptr;
 static const nvn::SamplerPool* g_cmd_sampler_pool = nullptr;
+static const nvn::TexturePool* g_overlay_texture_pool = nullptr;
+static const nvn::SamplerPool* g_overlay_sampler_pool = nullptr;
 static int g_cmd_buffer_count = 0;
 static std::atomic<bool> g_game_cmd_recording{false};
 static std::atomic<bool> g_overlay_cmd_recording{false};
@@ -304,6 +326,8 @@ void ensure_device_initialized(nvn::Device* device);
 bool nvnDeviceInitialize_hook(nvn::Device* device, const nvn::DeviceBuilder* builder);
 nvn::GenericFuncPtr nvnDeviceGetProcAddress_hook(const nvn::Device* device,
                                                  const char* procName);
+static nvn::GenericFuncPtr nvnDeviceGetProcAddress_hook_mut(nvn::Device* device,
+                                                            const char* procName);
 bool nvnQueueInitialize_hook(nvn::Queue* queue, const nvn::QueueBuilder* builder);
 bool nvnCommandBufferInitialize_hook(nvn::CommandBuffer* buffer, nvn::Device* device);
 void nvnCommandBufferBeginRecording_hook(nvn::CommandBuffer* buffer);
@@ -312,6 +336,24 @@ void nvnCommandBufferSetTexturePool_hook(nvn::CommandBuffer* cmd_buf,
                                          const nvn::TexturePool* pool);
 void nvnCommandBufferSetSamplerPool_hook(nvn::CommandBuffer* cmd_buf,
                                          const nvn::SamplerPool* pool);
+void nvnCommandBufferBindTexture_hook(nvn::CommandBuffer* cmd_buf,
+                                      nvn::ShaderStage::Enum stage,
+                                      int index,
+                                      nvn::TextureHandle texture);
+void nvnCommandBufferBindTextures_hook(nvn::CommandBuffer* cmd_buf,
+                                       nvn::ShaderStage::Enum stage,
+                                       int first,
+                                       int count,
+                                       const nvn::TextureHandle* textures);
+void nvnCommandBufferBindImage_hook(nvn::CommandBuffer* cmd_buf,
+                                    nvn::ShaderStage::Enum stage,
+                                    int index,
+                                    nvn::ImageHandle image);
+void nvnCommandBufferBindImages_hook(nvn::CommandBuffer* cmd_buf,
+                                     nvn::ShaderStage::Enum stage,
+                                     int first,
+                                     int count,
+                                     const nvn::ImageHandle* images);
 void nvnQueuePresentTexture_hook(nvn::Queue* queue, nvn::Window* window, int texture_index);
 void nvnQueueSubmitCommands_hook(nvn::Queue* queue,
                                  int count,
@@ -428,6 +470,7 @@ static uint64_t g_prev_buttons = 0;
 static std::atomic<bool> g_logged_toggle_probe{false};
 static std::atomic<bool> g_input_hooks_installed{false};
 static std::atomic<bool> g_device_initialized{false};
+static std::atomic<bool> g_device_initializing{false};
 static const char* g_last_error = "idle";
 static nvn::Queue* g_last_queue = nullptr;
 static bool g_logged_render_attempt = false;
@@ -459,6 +502,9 @@ void ensure_device_initialized(nvn::Device* device)
     if (g_device_initialized.load(std::memory_order_relaxed)) {
         return;
     }
+    if (g_device_initializing.exchange(true, std::memory_order_relaxed)) {
+        return;
+    }
     if (!g_device_get_proc_orig) {
         nvn::GenericFuncPtr get_proc = lookup_nvn_symbol(kGetAddress);
         if (get_proc) {
@@ -471,7 +517,12 @@ void ensure_device_initialized(nvn::Device* device)
     }
     g_get_proc_orig =
         reinterpret_cast<nvn::GetProcAddressPtr>(g_device_get_proc_orig);
+#if RIVE_NVN_ENABLE_BIND_LOGS
+    debug_log("[rive] nvn bind logging enabled");
+    nvn::initialize(g_device, nvnDeviceGetProcAddress_hook_mut);
+#else
     nvn::initialize(g_device, g_get_proc_orig);
+#endif
     if (g_supports_draw_texture < 0) {
         int supports_draw = 0;
         g_device->GetInteger(nvn::DeviceInfo::SUPPORTS_DRAW_TEXTURE,
@@ -481,6 +532,7 @@ void ensure_device_initialized(nvn::Device* device)
     install_queue_hooks();
     install_window_hooks();
     g_device_initialized.store(true, std::memory_order_relaxed);
+    g_device_initializing.store(false, std::memory_order_relaxed);
     set_error("device-ready");
 }
 
@@ -1360,9 +1412,11 @@ bool ensure_render_context(nvn::Queue* queue)
         desc.device = g_device;
         desc.queue = queue;
         nvn::WindowOriginMode origin = g_device->GetWindowOriginMode();
-        const bool bottom_up = origin == nvn::WindowOriginMode::LOWER_LEFT;
-        desc.clip_space_bottom_up = bottom_up ? 1 : 0;
-        desc.framebuffer_bottom_up = bottom_up ? 1 : 0;
+        const bool framebuffer_bottom_up =
+            origin == nvn::WindowOriginMode::LOWER_LEFT;
+        // NVN uses GL-style clip space (Y+ up) regardless of window origin.
+        desc.clip_space_bottom_up = 1;
+        desc.framebuffer_bottom_up = framebuffer_bottom_up ? 1 : 0;
         ensure_default_allocator();
         if (g_allocator_set.load(std::memory_order_relaxed)) {
             desc.allocator = &g_allocator;
@@ -1384,6 +1438,49 @@ bool ensure_render_context(nvn::Queue* queue)
 bool is_overlay_command_buffer(const nvn::CommandBuffer* buffer)
 {
     return g_overlay_cmd.initialized && buffer == &g_overlay_cmd.buffer;
+}
+
+static const char* shader_stage_name(nvn::ShaderStage::Enum stage)
+{
+    switch (stage) {
+        case nvn::ShaderStage::VERTEX:
+            return "vert";
+        case nvn::ShaderStage::FRAGMENT:
+            return "frag";
+        case nvn::ShaderStage::GEOMETRY:
+            return "geom";
+        case nvn::ShaderStage::TESS_CONTROL:
+            return "tess_ctrl";
+        case nvn::ShaderStage::TESS_EVALUATION:
+            return "tess_eval";
+        case nvn::ShaderStage::COMPUTE:
+            return "compute";
+        default:
+            return "unknown";
+    }
+}
+
+static bool should_log_bindings(const nvn::CommandBuffer* cmd)
+{
+    if (!cmd) {
+        return false;
+    }
+    if (g_rendering.load(std::memory_order_relaxed)) {
+        return true;
+    }
+    return is_overlay_command_buffer(cmd);
+}
+
+static const nvn::TexturePool* log_texture_pool_for(const nvn::CommandBuffer* cmd)
+{
+    return is_overlay_command_buffer(cmd) ? g_overlay_texture_pool
+                                          : g_cmd_texture_pool;
+}
+
+static const nvn::SamplerPool* log_sampler_pool_for(const nvn::CommandBuffer* cmd)
+{
+    return is_overlay_command_buffer(cmd) ? g_overlay_sampler_pool
+                                          : g_cmd_sampler_pool;
 }
 
 static void overlay_command_memory_callback(nvn::CommandBuffer* cmd,
@@ -1546,12 +1643,13 @@ bool ensure_overlay_command_buffer()
 
 bool ensure_command_buffer()
 {
-    if (g_device && (g_overlay_cmd.initialized || ensure_overlay_command_buffer())) {
+    if (g_device && (g_overlay_cmd.initialized || ensure_overlay_command_buffer()))
+    {
         g_host.command_buffer = &g_overlay_cmd.buffer;
-    } else if (!g_host.command_buffer && g_cmd_buffer) {
-        g_host.command_buffer = g_cmd_buffer;
     }
-    if (g_host.command_buffer) {
+
+    if (g_host.command_buffer)
+    {
         return true;
     }
     set_error("command buffer missing");
@@ -1621,6 +1719,7 @@ nvn::Format pick_offscreen_format(nvn::Format window_format, bool* out_overrode)
 {
     bool overrode = false;
     nvn::Format format = window_format;
+#if !RIVE_NVN_DISABLE_PLS
     switch (format) {
         case nvn::Format::RGBA8_SRGB:
             format = nvn::Format::RGBA8;
@@ -1655,6 +1754,10 @@ nvn::Format pick_offscreen_format(nvn::Format window_format, bool* out_overrode)
         format = nvn::Format::RGBA8;
         overrode = true;
     }
+#else
+    // When PLS is disabled, keep the offscreen format identical to the window
+    // format to avoid CopyTextureToTexture format mismatch issues.
+#endif
     if (out_overrode) {
         *out_overrode = overrode;
     }
@@ -1693,6 +1796,9 @@ bool ensure_offscreen_target(OffscreenTarget* target,
         set_error("offscreen invalid size");
         return false;
     }
+    // Force offscreen targets to single-layer, single-mip to avoid array views.
+    depth = 1;
+    levels = 1;
 
     bool format_overrode = false;
     const nvn::Format window_format = window_texture->GetFormat();
@@ -1731,7 +1837,9 @@ bool ensure_offscreen_target(OffscreenTarget* target,
 
     int flags_value = static_cast<int>(window_texture->GetFlags());
        flags_value &= ~static_cast<int>(nvn::TextureFlags::DISPLAY);
+#if !RIVE_NVN_DISABLE_PLS
        flags_value |= static_cast<int>(nvn::TextureFlags::IMAGE);
+#endif
    
        // NOTE: Do not force COMPRESSIBLE here.
        // The NVN spec warns that reusing memory for compressible textures requires clearing
@@ -2123,6 +2231,11 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
     if (force_msaa_samples <= 1) {
         force_msaa_samples = 0;
     }
+    static bool s_logged_forced_msaa = false;
+    if (force_msaa_samples > 1 && !s_logged_forced_msaa) {
+        debug_log("[rive] forcing msaa samples=%d", force_msaa_samples);
+        s_logged_forced_msaa = true;
+    }
     const bool force_offscreen = force_msaa_samples > 1;
 
     bool use_offscreen =
@@ -2253,8 +2366,9 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
             : RIVE_LOAD_PRESERVE_RENDER_TARGET;
     frame.clear_color = force_clear ? 0xFFFF00FFu : 0;
     frame.msaa_sample_count = g_host.sample_count > 1 ? g_host.sample_count : 0;
-    frame.disable_raster_ordering = RIVE_NVN_FORCE_RASTER_ORDERING ? 0 : 1;
+    frame.disable_raster_ordering = 1;
 #if RIVE_NVN_FORCE_RASTER_ORDERING
+    frame.disable_raster_ordering = 0;
     static bool s_logged_raster_ordering = false;
     if (!s_logged_raster_ordering) {
         debug_log("[rive] raster ordering forced on");
@@ -2361,6 +2475,8 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
                      nvn::BarrierBits::INVALIDATE_TEXTURE);
         if (msaa_target && resolve_target) {
             cmd->Downsample(&msaa_target->texture, &resolve_target->texture);
+            cmd->Barrier(nvn::BarrierBits::ORDER_FRAGMENTS |
+                         nvn::BarrierBits::INVALIDATE_TEXTURE);
         }
 
         nvn::Texture* composite_src =
@@ -2374,8 +2490,7 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
         const float debug_green[4] = {0.0f, 1.0f, 0.0f, 1.0f};
         clear_texture_color(cmd, composite_src, debug_green);
 #endif
-        const bool use_draw_texture =
-            g_supports_draw_texture > 0 && !RIVE_NVN_FORCE_COPY_TEXTURE;
+        const bool use_draw_texture = false;
         if (use_draw_texture) {
             nvn::TextureView color_view;
             init_texture_view(&color_view, color);
@@ -2484,11 +2599,15 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
                 copy_height,
                 1,
             };
+            nvn::TextureView src_view;
+            init_texture_view(&src_view, composite_src);
+            nvn::TextureView dst_view;
+            init_texture_view(&dst_view, color);
             cmd->CopyTextureToTexture(composite_src,
-                                      nullptr,
+                                      &src_view,
                                       &src,
                                       color,
-                                      nullptr,
+                                      &dst_view,
                                       &dst,
                                       nvn::CopyFlags::NONE);
         }
@@ -2923,13 +3042,25 @@ bool nvnCommandBufferInitialize_hook(nvn::CommandBuffer* buffer,
 void nvnCommandBufferSetTexturePool_hook(nvn::CommandBuffer* cmd_buf,
                                          const nvn::TexturePool* pool)
 {
-    if (cmd_buf && !is_overlay_command_buffer(cmd_buf)) {
-        g_cmd_buffer = cmd_buf;
-        g_cmd_texture_pool = pool;
-        if (!g_overlay_cmd.initialized) {
-            g_host.command_buffer = cmd_buf;
+    if (cmd_buf) {
+        if (is_overlay_command_buffer(cmd_buf)) {
+            g_overlay_texture_pool = pool;
+        } else {
+            g_cmd_buffer = cmd_buf;
+            g_cmd_texture_pool = pool;
+            if (!g_overlay_cmd.initialized) {
+                g_host.command_buffer = cmd_buf;
+            }
         }
     }
+#if RIVE_NVN_ENABLE_BIND_LOGS
+    if (should_log_bindings(cmd_buf)) {
+        debug_log("[rive nvn] SetTexturePool cmd=%p pool=%p overlay=%d",
+                  cmd_buf,
+                  pool,
+                  is_overlay_command_buffer(cmd_buf) ? 1 : 0);
+    }
+#endif
     if (g_command_set_texture_pool_orig) {
         g_command_set_texture_pool_orig(cmd_buf, pool);
     }
@@ -2938,15 +3069,149 @@ void nvnCommandBufferSetTexturePool_hook(nvn::CommandBuffer* cmd_buf,
 void nvnCommandBufferSetSamplerPool_hook(nvn::CommandBuffer* cmd_buf,
                                          const nvn::SamplerPool* pool)
 {
-    if (cmd_buf && !is_overlay_command_buffer(cmd_buf)) {
-        g_cmd_buffer = cmd_buf;
-        g_cmd_sampler_pool = pool;
-        if (!g_overlay_cmd.initialized) {
-            g_host.command_buffer = cmd_buf;
+    if (cmd_buf) {
+        if (is_overlay_command_buffer(cmd_buf)) {
+            g_overlay_sampler_pool = pool;
+        } else {
+            g_cmd_buffer = cmd_buf;
+            g_cmd_sampler_pool = pool;
+            if (!g_overlay_cmd.initialized) {
+                g_host.command_buffer = cmd_buf;
+            }
         }
     }
+#if RIVE_NVN_ENABLE_BIND_LOGS
+    if (should_log_bindings(cmd_buf)) {
+        debug_log("[rive nvn] SetSamplerPool cmd=%p pool=%p overlay=%d",
+                  cmd_buf,
+                  pool,
+                  is_overlay_command_buffer(cmd_buf) ? 1 : 0);
+    }
+#endif
     if (g_command_set_sampler_pool_orig) {
         g_command_set_sampler_pool_orig(cmd_buf, pool);
+    }
+}
+
+void nvnCommandBufferBindTexture_hook(nvn::CommandBuffer* cmd_buf,
+                                      nvn::ShaderStage::Enum stage,
+                                      int index,
+                                      nvn::TextureHandle texture)
+{
+#if RIVE_NVN_ENABLE_BIND_LOGS
+    if (should_log_bindings(cmd_buf)) {
+        debug_log(
+            "[rive nvn] BindTexture cmd=%p stage=%s(%d) idx=%d handle=0x%llx tex_pool=%p samp_pool=%p overlay=%d",
+            cmd_buf,
+            shader_stage_name(stage),
+            static_cast<int>(stage),
+            index,
+            static_cast<unsigned long long>(texture),
+            log_texture_pool_for(cmd_buf),
+            log_sampler_pool_for(cmd_buf),
+            is_overlay_command_buffer(cmd_buf) ? 1 : 0);
+    }
+#endif
+    if (g_command_bind_texture_orig) {
+        g_command_bind_texture_orig(cmd_buf, stage, index, texture);
+    }
+}
+
+void nvnCommandBufferBindTextures_hook(nvn::CommandBuffer* cmd_buf,
+                                       nvn::ShaderStage::Enum stage,
+                                       int first,
+                                       int count,
+                                       const nvn::TextureHandle* textures)
+{
+#if RIVE_NVN_ENABLE_BIND_LOGS
+    if (should_log_bindings(cmd_buf)) {
+        debug_log("[rive nvn] BindTextures cmd=%p stage=%s(%d) first=%d count=%d tex_pool=%p samp_pool=%p overlay=%d",
+                  cmd_buf,
+                  shader_stage_name(stage),
+                  static_cast<int>(stage),
+                  first,
+                  count,
+                  log_texture_pool_for(cmd_buf),
+                  log_sampler_pool_for(cmd_buf),
+                  is_overlay_command_buffer(cmd_buf) ? 1 : 0);
+        if (textures) {
+            const int limit = count < 16 ? count : 16;
+            for (int i = 0; i < limit; ++i) {
+                const nvn::TextureHandle handle = textures[i];
+                if (handle != 0) {
+                    debug_log("    [rive nvn]  tex[%d]=0x%llx",
+                              first + i,
+                              static_cast<unsigned long long>(handle));
+                }
+            }
+            if (count > limit) {
+                debug_log("    [rive nvn]  ... %d more", count - limit);
+            }
+        }
+    }
+#endif
+    if (g_command_bind_textures_orig) {
+        g_command_bind_textures_orig(cmd_buf, stage, first, count, textures);
+    }
+}
+
+void nvnCommandBufferBindImage_hook(nvn::CommandBuffer* cmd_buf,
+                                    nvn::ShaderStage::Enum stage,
+                                    int index,
+                                    nvn::ImageHandle image)
+{
+#if RIVE_NVN_ENABLE_BIND_LOGS
+    if (should_log_bindings(cmd_buf)) {
+        debug_log(
+            "[rive nvn] BindImage cmd=%p stage=%s(%d) idx=%d handle=0x%llx tex_pool=%p overlay=%d",
+            cmd_buf,
+            shader_stage_name(stage),
+            static_cast<int>(stage),
+            index,
+            static_cast<unsigned long long>(image),
+            log_texture_pool_for(cmd_buf),
+            is_overlay_command_buffer(cmd_buf) ? 1 : 0);
+    }
+#endif
+    if (g_command_bind_image_orig) {
+        g_command_bind_image_orig(cmd_buf, stage, index, image);
+    }
+}
+
+void nvnCommandBufferBindImages_hook(nvn::CommandBuffer* cmd_buf,
+                                     nvn::ShaderStage::Enum stage,
+                                     int first,
+                                     int count,
+                                     const nvn::ImageHandle* images)
+{
+#if RIVE_NVN_ENABLE_BIND_LOGS
+    if (should_log_bindings(cmd_buf)) {
+        debug_log("[rive nvn] BindImages cmd=%p stage=%s(%d) first=%d count=%d tex_pool=%p overlay=%d",
+                  cmd_buf,
+                  shader_stage_name(stage),
+                  static_cast<int>(stage),
+                  first,
+                  count,
+                  log_texture_pool_for(cmd_buf),
+                  is_overlay_command_buffer(cmd_buf) ? 1 : 0);
+        if (images) {
+            const int limit = count < 16 ? count : 16;
+            for (int i = 0; i < limit; ++i) {
+                const nvn::ImageHandle handle = images[i];
+                if (handle != 0) {
+                    debug_log("    [rive nvn]  img[%d]=0x%llx",
+                              first + i,
+                              static_cast<unsigned long long>(handle));
+                }
+            }
+            if (count > limit) {
+                debug_log("    [rive nvn]  ... %d more", count - limit);
+            }
+        }
+    }
+#endif
+    if (g_command_bind_images_orig) {
+        g_command_bind_images_orig(cmd_buf, stage, first, count, images);
     }
 }
 
@@ -3116,6 +3381,38 @@ nvn::GenericFuncPtr nvnDeviceGetProcAddress_hook(const nvn::Device* device,
         return reinterpret_cast<nvn::GenericFuncPtr>(
             &nvnCommandBufferSetSamplerPool_hook);
     }
+    if (std::strcmp(procName, kCommandBufferBindTexture) == 0) {
+        if (!g_command_bind_texture_orig) {
+            g_command_bind_texture_orig =
+                reinterpret_cast<nvn::NVN_TYPE(CommandBufferBindTexture)>(ptr);
+        }
+        return reinterpret_cast<nvn::GenericFuncPtr>(
+            &nvnCommandBufferBindTexture_hook);
+    }
+    if (std::strcmp(procName, kCommandBufferBindTextures) == 0) {
+        if (!g_command_bind_textures_orig) {
+            g_command_bind_textures_orig =
+                reinterpret_cast<nvn::NVN_TYPE(CommandBufferBindTextures)>(ptr);
+        }
+        return reinterpret_cast<nvn::GenericFuncPtr>(
+            &nvnCommandBufferBindTextures_hook);
+    }
+    if (std::strcmp(procName, kCommandBufferBindImage) == 0) {
+        if (!g_command_bind_image_orig) {
+            g_command_bind_image_orig =
+                reinterpret_cast<nvn::NVN_TYPE(CommandBufferBindImage)>(ptr);
+        }
+        return reinterpret_cast<nvn::GenericFuncPtr>(
+            &nvnCommandBufferBindImage_hook);
+    }
+    if (std::strcmp(procName, kCommandBufferBindImages) == 0) {
+        if (!g_command_bind_images_orig) {
+            g_command_bind_images_orig =
+                reinterpret_cast<nvn::NVN_TYPE(CommandBufferBindImages)>(ptr);
+        }
+        return reinterpret_cast<nvn::GenericFuncPtr>(
+            &nvnCommandBufferBindImages_hook);
+    }
     if (std::strcmp(procName, kWindowSetCrop) == 0) {
         if (!g_window_set_crop_orig) {
             g_window_set_crop_orig =
@@ -3159,6 +3456,13 @@ nvn::GenericFuncPtr nvnDeviceGetProcAddress_hook(const nvn::Device* device,
 
     return ptr;
 }
+
+static nvn::GenericFuncPtr nvnDeviceGetProcAddress_hook_mut(nvn::Device* device,
+                                                            const char* procName)
+{
+    return nvnDeviceGetProcAddress_hook(device, procName);
+}
+
 
 bool nvnDeviceInitialize_hook(nvn::Device* device,
                               const nvn::DeviceBuilder* builder)

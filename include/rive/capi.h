@@ -209,6 +209,7 @@ typedef struct RiveNVNContextDesc
     uint8_t clip_space_bottom_up;
     uint8_t framebuffer_bottom_up;
     const RiveNVNAllocator* allocator;
+    uint8_t force_non_pls_path;
 } RiveNVNContextDesc;
 
 typedef void* (*RiveNVNAllocFn)(size_t size, size_t alignment, void* user);

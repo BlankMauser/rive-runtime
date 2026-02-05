@@ -15,6 +15,14 @@
 #define RIVE_NVN_PLS_CLIP_RGBA8 1
 #endif
 
+#ifndef RIVE_NVN_PLS_BINDING_BASE
+#define RIVE_NVN_PLS_BINDING_BASE 0
+#endif
+
+#ifndef RIVE_NVN_PLS_FIXED_LAYOUT
+#define RIVE_NVN_PLS_FIXED_LAYOUT 1
+#endif
+
 namespace rive::gpu::nvn
 {
 static void append_shader_feature_defines(std::vector<const char*>& defines,
@@ -142,6 +150,12 @@ std::string BuildAtomicShaderSource(ShaderStage stage,
     // Keep clip buffer RGBA8 without changing color blending behavior.
     defines.push_back("RIVE_NVN_PLS_CLIP_RGBA8");
 #endif
+    // NVN backend hardcodes PLS storage images to 2D for emulator compatibility.
+    defines.push_back("RIVE_NVN_PLS_FORCE_2D");
+#if RIVE_NVN_PLS_FIXED_LAYOUT
+    // Force a stable PLS binding layout to avoid relying on reflection.
+    defines.push_back("RIVE_NVN_PLS_FIXED_LAYOUT");
+#endif
     if (params.caps.supportsFragmentShaderInterlock)
     {
         // Enable NV_fragment_shader_interlock so PLS atomics serialize.
@@ -220,6 +234,19 @@ std::string BuildAtomicShaderSource(ShaderStage stage,
     {
         shaderSource << "#define " << define << " true\n";
     }
+
+#if !RIVE_NVN_PLS_FIXED_LAYOUT
+    shaderSource << "#define RIVE_PLS_BINDING_BASE "
+                 << RIVE_NVN_PLS_BINDING_BASE << "\n";
+    const int plsBindingBase = RIVE_NVN_PLS_BINDING_BASE;
+    shaderSource << "#define COLOR_PLANE_IDX " << (plsBindingBase + 0) << "\n";
+    shaderSource << "#define CLIP_PLANE_IDX " << (plsBindingBase + 1) << "\n";
+    shaderSource << "#define SCRATCH_COLOR_PLANE_IDX " << (plsBindingBase + 2)
+                 << "\n";
+    shaderSource << "#define COVERAGE_PLANE_IDX " << (plsBindingBase + 3)
+                 << "\n";
+    shaderSource << "#define PLS_PLANE_COUNT 4\n";
+#endif
 
     shaderSource << rive::gpu::glsl::glsl << "\n";
     shaderSource << rive::gpu::glsl::constants << "\n";

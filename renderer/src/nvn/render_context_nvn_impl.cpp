@@ -20,8 +20,21 @@
 #define RIVE_NVN_ENABLE_LOGS 0
 #endif
 
+#ifndef RIVE_NVN_ENABLE_BIND_LOGS
+#define RIVE_NVN_ENABLE_BIND_LOGS 0
+#endif
+
 #ifndef RIVE_NVN_ENABLE_RASTER_ORDERING
 #define RIVE_NVN_ENABLE_RASTER_ORDERING 1
+#endif
+
+#ifndef RIVE_NVN_DISABLE_PLS
+#define RIVE_NVN_DISABLE_PLS 1
+#endif
+
+// Debug: disable stencil tests in MSAA path to isolate black output.
+#ifndef RIVE_NVN_MSAA_DISABLE_STENCIL
+#define RIVE_NVN_MSAA_DISABLE_STENCIL 1
 #endif
 
 // Use RGBA8 clip plane to avoid integer storage-image issues on some backends.
@@ -29,30 +42,80 @@
 #define RIVE_NVN_PLS_CLIP_RGBA8 1
 #endif
 
+#ifndef RIVE_NVN_PLS_FIXED_LAYOUT
+#define RIVE_NVN_PLS_FIXED_LAYOUT 1
+#endif
+
 #if !RIVE_NVN_ENABLE_LOGS
 #define debug_log(...) ((void)0)
 #endif
+
+static bool env_flag_enabled(const char* name)
+{
+    if (!name)
+    {
+        return false;
+    }
+    const char* value = std::getenv(name);
+    if (!value || !*value)
+    {
+        return false;
+    }
+    return value[0] == '1' || value[0] == 'y' || value[0] == 'Y' ||
+           value[0] == 't' || value[0] == 'T';
+}
 
 #if defined(__SWITCH__)
 #include "gfx/managed/memory.hpp"
 #endif
 
+#ifndef RIVE_NVN_PLS_BINDING_BASE
+#define RIVE_NVN_PLS_BINDING_BASE 0
+#endif
+#if !RIVE_NVN_PLS_FIXED_LAYOUT
+#define RIVE_PLS_BINDING_BASE RIVE_NVN_PLS_BINDING_BASE
+#endif
 #include "shaders/constants.glsl"
 
 namespace nvn_api = ::nvn;
 
+#ifndef RIVE_NVN_PLS_COLOR_FORMAT
+#define RIVE_NVN_PLS_COLOR_FORMAT nvn_api::Format::RGBA8
+#endif
+#ifndef RIVE_NVN_PLS_SCRATCH_FORMAT
+#define RIVE_NVN_PLS_SCRATCH_FORMAT nvn_api::Format::RGBA8
+#endif
+#ifndef RIVE_NVN_PLS_CLIP_FORMAT
+#if RIVE_NVN_PLS_CLIP_RGBA8
+#define RIVE_NVN_PLS_CLIP_FORMAT nvn_api::Format::RGBA8
+#else
+#define RIVE_NVN_PLS_CLIP_FORMAT nvn_api::Format::R32UI
+#endif
+#endif
+#ifndef RIVE_NVN_PLS_COVERAGE_FORMAT
+#define RIVE_NVN_PLS_COVERAGE_FORMAT nvn_api::Format::R32UI
+#endif
 
+
+#include "generated/shaders/advanced_blend.glsl.hpp"
 #include "generated/shaders/bezier_utils.glsl.hpp"
 #include "generated/shaders/color_ramp.glsl.hpp"
 #include "generated/shaders/common.glsl.hpp"
 #include "generated/shaders/constants.glsl.hpp"
 #include "generated/shaders/draw_path_common.glsl.hpp"
+#include "generated/shaders/draw_path.vert.hpp"
+#include "generated/shaders/draw_msaa_object.frag.hpp"
+#include "generated/shaders/draw_mesh.frag.hpp"
+#include "generated/shaders/draw_image_mesh.vert.hpp"
+#include "generated/shaders/stencil_draw.glsl.hpp"
 #include "generated/shaders/glsl.glsl.hpp"
 #include "generated/shaders/render_atlas.glsl.hpp"
 #include "generated/shaders/tessellate.glsl.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -60,47 +123,130 @@ namespace nvn_api = ::nvn;
 #include <memory>
 #include <new>
 #include <sstream>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <cstdio>
 
 namespace
 {
-nvn_api::TextureTarget view_target_for(nvn_api::TextureTarget target)
+constexpr bool kDumpShaders = false;
+enum class ViewKind
+{
+    SampleOrRenderTarget,
+    StorageImage,
+};
+
+nvn_api::TextureTarget coerce_array_target(nvn_api::TextureTarget target)
 {
     switch (target)
     {
-        case nvn_api::TextureTarget::TARGET_2D:
-        case nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE:
-            return target;
+        case nvn_api::TextureTarget::TARGET_2D_ARRAY:
+            return nvn_api::TextureTarget::TARGET_2D;
         case nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE_ARRAY:
             return nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE;
+        case nvn_api::TextureTarget::TARGET_CUBEMAP_ARRAY:
+            return nvn_api::TextureTarget::TARGET_CUBEMAP;
         default:
-            return nvn_api::TextureTarget::TARGET_2D;
+            return target;
     }
 }
 
+nvn_api::TextureTarget view_target_for(nvn_api::TextureTarget target,
+                                       ViewKind kind)
+{
+    switch (target)
+    {
+        case nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE_ARRAY:
+            return nvn_api::TextureTarget::TARGET_2D_MULTISAMPLE;
+        default:
+            break;
+    }
+
+    if (kind == ViewKind::SampleOrRenderTarget)
+    {
+        return coerce_array_target(target);
+    }
+
+    return target;
+}
+
+inline nvn_api::BarrierBits texture_visibility_barrier_bits()
+{
+    return nvn_api::BarrierBits::ORDER_FRAGMENTS |
+           nvn_api::BarrierBits::INVALIDATE_TEXTURE |
+           nvn_api::BarrierBits::INVALIDATE_SHADER;
+}
+
+#ifndef RIVE_NVN_FORCE_PLS_L2_INVALIDATE
+#define RIVE_NVN_FORCE_PLS_L2_INVALIDATE 1
+#endif
+
+#ifndef RIVE_NVN_FORCE_PLS_BARRIER_EVERY_DRAW
+#define RIVE_NVN_FORCE_PLS_BARRIER_EVERY_DRAW 1
+#endif
+
+#ifndef RIVE_NVN_ENABLE_REFLECTION_LOGS
+#define RIVE_NVN_ENABLE_REFLECTION_LOGS 0
+#endif
+
+inline nvn_api::BarrierBits pls_storage_barrier_bits()
+{
+    auto bits = nvn_api::BarrierBits::ORDER_FRAGMENTS |
+                nvn_api::BarrierBits::INVALIDATE_TEXTURE |
+                nvn_api::BarrierBits::INVALIDATE_SHADER |
+                nvn_api::BarrierBits::ORDER_PRIMITIVES;
+#if RIVE_NVN_FORCE_PLS_L2_INVALIDATE
+#ifdef NVN_BARRIER_INVALIDATE_L2_CACHE_BIT
+    bits = bits |
+           static_cast<nvn_api::BarrierBits>(NVN_BARRIER_INVALIDATE_L2_CACHE_BIT);
+#endif
+#endif
+    return bits;
+}
+
+static void dump_shader_source(const char* label,
+                               const char* stage,
+                               const char* source)
+{
+    (void)label;
+    (void)stage;
+    (void)source;
+    // Disabled: SD card access can crash on emulator and hardware.
+}
+
+
 void init_texture_view(nvn_api::TextureView* view,
                        nvn_api::TextureTarget target,
-                       nvn_api::Format format)
+                       nvn_api::Format format,
+                       ViewKind kind = ViewKind::SampleOrRenderTarget)
 {
     if (!view)
     {
         return;
     }
+    nvn_api::TextureTarget out_target = view_target_for(target, kind);
+    debug_log("[rive dbg] init_texture_view: in_target=%d, out_target=%d, format=%d",
+              static_cast<int>(target),
+              static_cast<int>(out_target),
+              static_cast<int>(format));
     view->SetDefaults()
         .SetFormat(format)
-        .SetTarget(view_target_for(target))
+        .SetTarget(out_target)
         .SetLevels(0, 1)
         .SetLayers(0, 1);
 }
 
-void init_texture_view(nvn_api::TextureView* view, nvn_api::Texture* texture)
+void init_texture_view(nvn_api::TextureView* view,
+                       nvn_api::Texture* texture,
+                       ViewKind kind = ViewKind::SampleOrRenderTarget)
 {
     if (!view || !texture)
     {
         return;
     }
-    init_texture_view(view, texture->GetTarget(), texture->GetFormat());
+    init_texture_view(view, texture->GetTarget(), texture->GetFormat(), kind);
 }
 
 size_t align_up(size_t value, size_t alignment)
@@ -112,15 +258,53 @@ size_t align_up(size_t value, size_t alignment)
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
-void debug_log_raw(const char* msg)
+void dump_texture_descriptor(const void* descriptor_memory,
+                             size_t descriptor_memory_size,
+                             size_t sampler_bytes,
+                             int descriptor_size,
+                             int id,
+                             const char* label)
 {
-#if RIVE_NVN_ENABLE_LOGS
-    skyline::TcpLogger::SendRaw("\033[1:37m[comet]\033[0m: ");
-    skyline::TcpLogger::SendRaw(msg);
-    skyline::TcpLogger::SendRaw("\n");
-#else
-    (void)msg;
-#endif
+    if (!descriptor_memory || descriptor_size <= 0 || id < 0)
+    {
+        return;
+    }
+    const size_t entry_size = static_cast<size_t>(descriptor_size);
+    const size_t offset = sampler_bytes + entry_size * static_cast<size_t>(id);
+    if (offset + sizeof(uint32_t) * 8 > descriptor_memory_size)
+    {
+        return;
+    }
+    const auto* base = static_cast<const uint8_t*>(descriptor_memory) + offset;
+    const auto* words = reinterpret_cast<const uint32_t*>(base);
+    const uint32_t word0 = words[0];
+    const uint32_t word4 = words[4];
+    const uint32_t word5 = words[5];
+    const uint32_t fmt = word0 & 0x8007ffffu;
+    const int swizzle_r = static_cast<int>((word0 >> 19) & 7u);
+    const int swizzle_g = static_cast<int>((word0 >> 22) & 7u);
+    const int swizzle_b = static_cast<int>((word0 >> 25) & 7u);
+    const int swizzle_a = static_cast<int>((word0 >> 28) & 7u);
+    const int target = static_cast<int>((word4 >> 23) & 0xfu);
+    const int srgb = static_cast<int>((word4 >> 22) & 1u);
+    const int width = static_cast<int>(word4 & 0xffffu) + 1;
+    const int height = static_cast<int>(word5 & 0xffffu) + 1;
+    const int depth = static_cast<int>((word5 >> 16) & 0x3fffu) + 1;
+    debug_log(
+        "[rive nvn] texdesc %s id=%d fmt=0x%x target=%d srgb=%d whd=%dx%dx%d swz=%d%d%d%d word0=0x%08x",
+        label ? label : "(unknown)",
+        id,
+        fmt,
+        target,
+        srgb,
+        width,
+        height,
+        depth,
+        swizzle_r,
+        swizzle_g,
+        swizzle_b,
+        swizzle_a,
+        word0);
 }
 
 struct GameAllocFns
@@ -540,6 +724,7 @@ struct PipelineKey
     rive::gpu::DrawType drawType = rive::gpu::DrawType::midpointFanPatches;
     rive::gpu::ShaderFeatures shaderFeatures = rive::gpu::ShaderFeatures::NONE;
     rive::gpu::ShaderMiscFlags miscFlags = rive::gpu::ShaderMiscFlags::none;
+    rive::gpu::InterlockMode interlockMode = rive::gpu::InterlockMode::atomics;
     rive::gpu::nvn::AtlasTextureType atlasTextureType =
         rive::gpu::nvn::AtlasTextureType::rgba8;
 
@@ -548,6 +733,7 @@ struct PipelineKey
         return drawType == other.drawType &&
                shaderFeatures == other.shaderFeatures &&
                miscFlags == other.miscFlags &&
+               interlockMode == other.interlockMode &&
                atlasTextureType == other.atlasTextureType;
     }
 };
@@ -561,6 +747,8 @@ struct PipelineKeyHasher
                 static_cast<size_t>(static_cast<uint32_t>(key.shaderFeatures));
         value = value * 1315423911u +
                 static_cast<size_t>(static_cast<uint32_t>(key.miscFlags));
+        value = value * 1315423911u +
+                static_cast<size_t>(key.interlockMode);
         value = value * 1315423911u +
                 static_cast<size_t>(key.atlasTextureType);
         return value;
@@ -946,7 +1134,6 @@ struct NVNTextureResource
         }
 
         // Some NVN producers (and some emulator backends) treat ordinary 2D textures as 2D_ARRAY with 1 layer.
-        // Our shaders are written for sampler2D / image2D, so force non-array targets to avoid descriptor/view mismatches.
         nvn_api::TextureTarget canonical_target = new_target;
         switch (canonical_target)
         {
@@ -1043,11 +1230,11 @@ struct NVNTextureResource
         }
 
         // Keep views explicit about levels/layers to avoid array-view mismatches in emulators.
-        init_texture_view(&view, target, format);
+        init_texture_view(&view, target, format, ViewKind::SampleOrRenderTarget);
         // Keep image views identity-swizzled to avoid storage-image validation issues.
         image_view.SetDefaults()
             .SetFormat(format)
-            .SetTarget(view_target_for(target))
+            .SetTarget(view_target_for(target, ViewKind::StorageImage))
             .SetLevels(0, 1)
             .SetLayers(0, 1)
             .SetSwizzle(nvn_api::TextureSwizzle::R,
@@ -1148,6 +1335,585 @@ bool extract_shader_binary(const GLSLCoutput* output,
     return false;
 }
 
+struct ProgramBindings
+{
+    int pls_color = -1;
+    int pls_clip = -1;
+    int pls_scratch = -1;
+    int pls_coverage = -1;
+
+    bool has_any() const
+    {
+        return pls_color >= 0 || pls_clip >= 0 || pls_scratch >= 0 ||
+               pls_coverage >= 0;
+    }
+};
+
+struct PreprocIfState
+{
+    bool parent_active = true;
+    bool branch_taken = false;
+    bool active = true;
+};
+
+static inline std::string_view trim_view(std::string_view text)
+{
+    size_t start = 0;
+    while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start])))
+    {
+        ++start;
+    }
+    size_t end = text.size();
+    while (end > start &&
+           std::isspace(static_cast<unsigned char>(text[end - 1])))
+    {
+        --end;
+    }
+    return text.substr(start, end - start);
+}
+
+static bool parse_int_token(std::string_view token, int* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+    token = trim_view(token);
+    if (token.empty())
+    {
+        return false;
+    }
+    while (!token.empty() &&
+           (token.back() == 'u' || token.back() == 'U'))
+    {
+        token = token.substr(0, token.size() - 1);
+    }
+    if (token.empty())
+    {
+        return false;
+    }
+    std::string temp(token);
+    char* end = nullptr;
+    long value = std::strtol(temp.c_str(), &end, 0);
+    if (!end || end == temp.c_str() || *end != '\0')
+    {
+        return false;
+    }
+    *out = static_cast<int>(value);
+    return true;
+}
+
+static bool eval_int_expr(const std::string& expr,
+                          const std::unordered_map<std::string, std::string>& macros,
+                          int* out,
+                          int depth = 0)
+{
+    if (!out || depth > 16)
+    {
+        return false;
+    }
+    std::string_view view = trim_view(expr);
+    if (view.empty())
+    {
+        return false;
+    }
+    while (view.size() >= 2 && view.front() == '(' && view.back() == ')')
+    {
+        view = trim_view(view.substr(1, view.size() - 2));
+    }
+    if (view.empty())
+    {
+        return false;
+    }
+    size_t pos = 0;
+    long sum = 0;
+    bool any = false;
+    while (pos < view.size())
+    {
+        size_t next = view.find('+', pos);
+        std::string_view token =
+            trim_view(view.substr(pos, next == std::string_view::npos
+                                           ? view.size() - pos
+                                           : next - pos));
+        if (!token.empty())
+        {
+            int value = 0;
+            if (parse_int_token(token, &value))
+            {
+                sum += value;
+                any = true;
+            }
+            else
+            {
+                std::string key(token);
+                auto it = macros.find(key);
+                if (it == macros.end())
+                {
+                    return false;
+                }
+                if (!eval_int_expr(it->second, macros, &value, depth + 1))
+                {
+                    return false;
+                }
+                sum += value;
+                any = true;
+            }
+        }
+        if (next == std::string_view::npos)
+        {
+            break;
+        }
+        pos = next + 1;
+    }
+    if (!any)
+    {
+        return false;
+    }
+    *out = static_cast<int>(sum);
+    return true;
+}
+
+static bool eval_defined_expr(std::string_view expr,
+                              const std::unordered_map<std::string, std::string>& macros)
+{
+    expr = trim_view(expr);
+    if (expr.empty())
+    {
+        return false;
+    }
+    // Split by ||
+    size_t pos = 0;
+    while (pos < expr.size())
+    {
+        size_t next_or = expr.find("||", pos);
+        std::string_view term =
+            trim_view(expr.substr(pos, next_or == std::string_view::npos
+                                           ? expr.size() - pos
+                                           : next_or - pos));
+        bool term_value = true;
+        size_t term_pos = 0;
+        while (term_pos < term.size())
+        {
+            size_t next_and = term.find("&&", term_pos);
+            std::string_view factor =
+                trim_view(term.substr(term_pos,
+                                      next_and == std::string_view::npos
+                                          ? term.size() - term_pos
+                                          : next_and - term_pos));
+            bool value = false;
+            if (!factor.empty())
+            {
+                bool negated = false;
+                if (factor.front() == '!')
+                {
+                    negated = true;
+                    factor = trim_view(factor.substr(1));
+                }
+                if (factor.rfind("defined", 0) == 0)
+                {
+                    size_t l = factor.find('(');
+                    size_t r = factor.find(')', l == std::string_view::npos ? 0 : l + 1);
+                    if (l != std::string_view::npos && r != std::string_view::npos && r > l)
+                    {
+                        std::string_view name =
+                            trim_view(factor.substr(l + 1, r - l - 1));
+                        value = macros.find(std::string(name)) != macros.end();
+                    }
+                }
+                else if (!factor.empty())
+                {
+                    int numeric = 0;
+                    if (parse_int_token(factor, &numeric))
+                    {
+                        value = (numeric != 0);
+                    }
+                    else
+                    {
+                        value = macros.find(std::string(factor)) != macros.end();
+                    }
+                }
+                if (negated)
+                {
+                    value = !value;
+                }
+            }
+            term_value = term_value && value;
+            if (!term_value)
+            {
+                break;
+            }
+            if (next_and == std::string_view::npos)
+            {
+                break;
+            }
+            term_pos = next_and + 2;
+        }
+        if (term_value)
+        {
+            return true;
+        }
+        if (next_or == std::string_view::npos)
+        {
+            break;
+        }
+        pos = next_or + 2;
+    }
+    return false;
+}
+
+static bool parse_pls_bindings_from_glsl(const char* source,
+                                         ProgramBindings* out)
+{
+    if (!source || !out)
+    {
+        return false;
+    }
+    *out = {};
+    std::unordered_map<std::string, std::string> macros;
+    std::vector<PreprocIfState> if_stack;
+
+    auto parse_define_line = [&](std::string_view trimmed_line,
+                                 std::unordered_map<std::string, std::string>&
+                                     macro_map) {
+        std::string_view rest = trim_view(trimmed_line.substr(7));
+        if (rest.empty())
+        {
+            return;
+        }
+        size_t name_end = 0;
+        while (name_end < rest.size() &&
+               !std::isspace(static_cast<unsigned char>(rest[name_end])) &&
+               rest[name_end] != '(')
+        {
+            ++name_end;
+        }
+        if (name_end == 0)
+        {
+            return;
+        }
+        std::string name(rest.substr(0, name_end));
+        if (name_end < rest.size() && rest[name_end] == '(')
+        {
+            return; // function-like macro
+        }
+        std::string value;
+        if (name_end < rest.size())
+        {
+            value = std::string(trim_view(rest.substr(name_end)));
+        }
+        macro_map[name] = value;
+    };
+
+    auto parse_pls_decl_line = [&](std::string_view trimmed_line,
+                                   const std::unordered_map<std::string, std::string>&
+                                       macro_map,
+                                   ProgramBindings* bindings) {
+        size_t decl_pos = trimmed_line.find("PLS_DECL");
+        if (decl_pos == std::string_view::npos)
+        {
+            return;
+        }
+
+        size_t open = trimmed_line.find('(', decl_pos);
+        size_t comma =
+            trimmed_line.find(',', open == std::string_view::npos ? 0 : open + 1);
+        size_t close =
+            trimmed_line.find(')', comma == std::string_view::npos ? 0 : comma + 1);
+        if (open == std::string_view::npos || comma == std::string_view::npos ||
+            close == std::string_view::npos || comma <= open)
+        {
+            return;
+        }
+
+        std::string idx_expr(
+            trim_view(trimmed_line.substr(open + 1, comma - open - 1)));
+        std::string name(
+            trim_view(trimmed_line.substr(comma + 1, close - comma - 1)));
+
+        int binding = -1;
+        if (!idx_expr.empty() && eval_int_expr(idx_expr, macro_map, &binding))
+        {
+            if (name.find("colorBuffer") != std::string::npos)
+            {
+                bindings->pls_color = binding;
+            }
+            else if (name.find("clipBuffer") != std::string::npos)
+            {
+                bindings->pls_clip = binding;
+            }
+            else if (name.find("scratch") != std::string::npos)
+            {
+                bindings->pls_scratch = binding;
+            }
+            else if (name.find("coverage") != std::string::npos)
+            {
+                bindings->pls_coverage = binding;
+            }
+        }
+    };
+
+    auto is_active = [&]() {
+        return if_stack.empty() ? true : if_stack.back().active;
+    };
+
+    std::string_view text(source);
+    size_t pos = 0;
+    while (pos <= text.size())
+    {
+        size_t end = text.find('\n', pos);
+        std::string_view line =
+            text.substr(pos, end == std::string_view::npos ? text.size() - pos
+                                                           : end - pos);
+        pos = (end == std::string_view::npos) ? text.size() + 1 : end + 1;
+
+        std::string_view trimmed = trim_view(line);
+        if (trimmed.empty())
+        {
+            continue;
+        }
+
+        if (trimmed.front() == '#')
+        {
+            if (trimmed.rfind("#ifdef", 0) == 0)
+            {
+                std::string_view name = trim_view(trimmed.substr(6));
+                bool cond = macros.find(std::string(name)) != macros.end();
+                PreprocIfState state;
+                state.parent_active = is_active();
+                state.branch_taken = cond;
+                state.active = state.parent_active && cond;
+                if_stack.push_back(state);
+                continue;
+            }
+            if (trimmed.rfind("#ifndef", 0) == 0)
+            {
+                std::string_view name = trim_view(trimmed.substr(7));
+                bool cond = macros.find(std::string(name)) == macros.end();
+                PreprocIfState state;
+                state.parent_active = is_active();
+                state.branch_taken = cond;
+                state.active = state.parent_active && cond;
+                if_stack.push_back(state);
+                continue;
+            }
+            if (trimmed.rfind("#if", 0) == 0 && trimmed.rfind("#ifdef", 0) != 0 &&
+                trimmed.rfind("#ifndef", 0) != 0)
+            {
+                std::string_view expr = trim_view(trimmed.substr(3));
+                bool cond = eval_defined_expr(expr, macros);
+                PreprocIfState state;
+                state.parent_active = is_active();
+                state.branch_taken = cond;
+                state.active = state.parent_active && cond;
+                if_stack.push_back(state);
+                continue;
+            }
+            if (trimmed.rfind("#elif", 0) == 0)
+            {
+                if (!if_stack.empty())
+                {
+                    auto& state = if_stack.back();
+                    if (state.branch_taken)
+                    {
+                        state.active = false;
+                    }
+                    else
+                    {
+                        std::string_view expr = trim_view(trimmed.substr(5));
+                        bool cond = eval_defined_expr(expr, macros);
+                        state.active = state.parent_active && cond;
+                        if (cond)
+                        {
+                            state.branch_taken = true;
+                        }
+                    }
+                }
+                continue;
+            }
+            if (trimmed.rfind("#else", 0) == 0)
+            {
+                if (!if_stack.empty())
+                {
+                    auto& state = if_stack.back();
+                    state.active = state.parent_active && !state.branch_taken;
+                    state.branch_taken = true;
+                }
+                continue;
+            }
+            if (trimmed.rfind("#endif", 0) == 0)
+            {
+                if (!if_stack.empty())
+                {
+                    if_stack.pop_back();
+                }
+                continue;
+            }
+            if (trimmed.rfind("#define", 0) == 0)
+            {
+                if (!is_active())
+                {
+                    continue;
+                }
+                parse_define_line(trimmed, macros);
+                continue;
+            }
+            if (trimmed.rfind("#undef", 0) == 0)
+            {
+                if (!is_active())
+                {
+                    continue;
+                }
+                std::string_view name = trim_view(trimmed.substr(6));
+                if (!name.empty())
+                {
+                    macros.erase(std::string(name));
+                }
+                continue;
+            }
+        }
+
+        if (!is_active())
+        {
+            continue;
+        }
+        if (trimmed.rfind("#define", 0) == 0)
+        {
+            continue;
+        }
+
+        parse_pls_decl_line(trimmed, macros, out);
+    }
+
+    if (out->has_any())
+    {
+        return true;
+    }
+
+    // Fallback: ignore preprocessor state and scan for PLS_DECL lines using
+    // any macro definitions we can find in the source.
+    std::unordered_map<std::string, std::string> fallback_macros;
+    text = std::string_view(source);
+    pos = 0;
+    while (pos <= text.size())
+    {
+        size_t end = text.find('\n', pos);
+        std::string_view line =
+            text.substr(pos, end == std::string_view::npos ? text.size() - pos
+                                                           : end - pos);
+        pos = (end == std::string_view::npos) ? text.size() + 1 : end + 1;
+
+        std::string_view trimmed = trim_view(line);
+        if (trimmed.empty())
+        {
+            continue;
+        }
+        if (trimmed.rfind("#define", 0) == 0)
+        {
+            parse_define_line(trimmed, fallback_macros);
+            continue;
+        }
+    }
+
+    text = std::string_view(source);
+    pos = 0;
+    while (pos <= text.size())
+    {
+        size_t end = text.find('\n', pos);
+        std::string_view line =
+            text.substr(pos, end == std::string_view::npos ? text.size() - pos
+                                                           : end - pos);
+        pos = (end == std::string_view::npos) ? text.size() + 1 : end + 1;
+
+        std::string_view trimmed = trim_view(line);
+        if (trimmed.empty())
+        {
+            continue;
+        }
+        parse_pls_decl_line(trimmed, fallback_macros, out);
+    }
+
+    return out->has_any();
+}
+
+static bool parse_reflection_bindings_from_header(
+    const GLSLCprogramReflectionHeader* reflection,
+    const uint8_t* header_base,
+    ProgramBindings* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+    *out = {};
+    if (!reflection || !header_base)
+    {
+        return false;
+    }
+
+    const uint8_t* data_base = header_base + reflection->common.dataOffset;
+    const char* string_pool =
+        reinterpret_cast<const char*>(data_base +
+                                      reflection->stringPoolOffset);
+    const auto* uniforms = reinterpret_cast<const GLSLCuniformInfo*>(
+        data_base + reflection->uniformOffset);
+    const int stage_index = static_cast<int>(NVN_SHADER_STAGE_FRAGMENT);
+    bool matched_any = false;
+
+    for (uint32_t i = 0; i < reflection->numUniforms; ++i)
+    {
+        const GLSLCuniformInfo& uniform = uniforms[i];
+        const char* name = string_pool + uniform.nameInfo.nameOffset;
+        if (!name)
+        {
+            continue;
+        }
+        if (!std::strstr(name, "colorBuffer") &&
+            !std::strstr(name, "clipBuffer") &&
+            !std::strstr(name, "scratch") &&
+            !std::strstr(name, "coverage"))
+        {
+            continue;
+        }
+        const int binding = uniform.bindings[stage_index];
+        if (binding < 0)
+        {
+            continue;
+        }
+        if (std::strstr(name, "colorBuffer"))
+        {
+            out->pls_color = binding;
+            matched_any = true;
+        }
+        else if (std::strstr(name, "clipBuffer"))
+        {
+            out->pls_clip = binding;
+            matched_any = true;
+        }
+        else if (std::strstr(name, "scratch"))
+        {
+            out->pls_scratch = binding;
+            matched_any = true;
+        }
+        else if (std::strstr(name, "coverage"))
+        {
+            out->pls_coverage = binding;
+            matched_any = true;
+        }
+
+#if RIVE_NVN_ENABLE_BIND_LOGS
+        if (RIVE_NVN_ENABLE_REFLECTION_LOGS)
+        {
+            debug_log("[rive nvn] reflection image name=%s binding=%d type=%d",
+                      name ? name : "(null)",
+                      binding,
+                      static_cast<int>(uniform.type));
+        }
+#endif
+    }
+
+    return matched_any;
+}
+
 class NvnShaderProgram
 {
 public:
@@ -1170,13 +1936,15 @@ public:
         }
 
         finalize();
+        m_bindings = {};
 
         std::vector<ShaderBinary> binaries;
         if (!compile_glsl(glslc_api,
                           glslc_allocator,
                           vertex_source,
                           fragment_source,
-                          binaries))
+                          binaries,
+                          &m_bindings))
         {
             static bool s_logged_compile_failure = false;
             if (!s_logged_compile_failure)
@@ -1210,6 +1978,7 @@ public:
     }
 
     bool initialized() const { return m_program != nullptr; }
+    const ProgramBindings& bindings() const { return m_bindings; }
 
     void finalize()
     {
@@ -1254,7 +2023,8 @@ private:
                              GlslAllocatorState& glslc_allocator,
                              const char* vertex_source,
                              const char* fragment_source,
-                             std::vector<ShaderBinary>& out_binaries)
+                             std::vector<ShaderBinary>& out_binaries,
+                             ProgramBindings* out_bindings)
     {
         if (!glslc_api.ready())
         {
@@ -1305,6 +2075,36 @@ private:
             compile_object.options = glslc_api.getDefaultOptions();
         }
 
+        ProgramBindings glsl_bindings = {};
+        bool have_glsl_bindings = false;
+        if (out_bindings)
+        {
+            have_glsl_bindings =
+                parse_pls_bindings_from_glsl(fragment_source, &glsl_bindings);
+#if RIVE_NVN_ENABLE_BIND_LOGS
+            if (glsl_bindings.has_any())
+            {
+                static ProgramBindings s_last_logged_bindings = {};
+                static bool s_has_last_logged = false;
+                if (!s_has_last_logged ||
+                    glsl_bindings.pls_color != s_last_logged_bindings.pls_color ||
+                    glsl_bindings.pls_clip != s_last_logged_bindings.pls_clip ||
+                    glsl_bindings.pls_scratch != s_last_logged_bindings.pls_scratch ||
+                    glsl_bindings.pls_coverage != s_last_logged_bindings.pls_coverage)
+                {
+                    debug_log(
+                        "[rive nvn] glsl bindings color=%d clip=%d scratch=%d coverage=%d",
+                        glsl_bindings.pls_color,
+                        glsl_bindings.pls_clip,
+                        glsl_bindings.pls_scratch,
+                        glsl_bindings.pls_coverage);
+                    s_last_logged_bindings = glsl_bindings;
+                    s_has_last_logged = true;
+                }
+            }
+#endif
+        }
+
         const char* sources[] = {vertex_source, fragment_source};
         NVNshaderStage stages[] = {NVN_SHADER_STAGE_VERTEX,
                                    NVN_SHADER_STAGE_FRAGMENT};
@@ -1314,7 +2114,7 @@ private:
         compile_object.input.count = 2;
 
         compile_object.options.optionFlags.outputGpuBinaries = 1;
-        compile_object.options.optionFlags.outputShaderReflection = 0;
+        compile_object.options.optionFlags.outputShaderReflection = 1;
         compile_object.options.optionFlags.outputAssembly = 0;
         compile_object.options.optionFlags.outputPerfStats = 0;
         compile_object.options.optionFlags.outputDebugInfo = GLSLC_DEBUG_LEVEL_G2;
@@ -1331,13 +2131,132 @@ private:
             {
                 debug_log("[rive] glslc compile failed");
                 log_glslc_compile_failure(compile_object);
+                dump_shader_source("compile_fail", "vert", vertex_source);
+                dump_shader_source("compile_fail", "frag", fragment_source);
                 s_logged_compile_failure = true;
             }
             glslc_api.finalize(&compile_object);
             return false;
         }
 
-        const GLSLCoutput* output = compile_object.lastCompiledResults->glslcOutput;
+        const GLSLCoutput* output =
+            compile_object.lastCompiledResults->glslcOutput;
+#if RIVE_NVN_ENABLE_REFLECTION_LOGS
+        {
+            static bool s_logged_reflection_enabled = false;
+            if (!s_logged_reflection_enabled)
+            {
+                debug_log("[rive nvn] reflection logs enabled");
+                s_logged_reflection_enabled = true;
+            }
+        }
+#endif
+
+        ProgramBindings reflection_bindings = {};
+        bool have_reflection = false;
+        if (out_bindings && compile_object.reflectionSection)
+        {
+            have_reflection = parse_reflection_bindings_from_header(
+                compile_object.reflectionSection,
+                reinterpret_cast<const uint8_t*>(
+                    compile_object.reflectionSection),
+                &reflection_bindings);
+        }
+        if (out_bindings && !have_reflection && output &&
+            output->magic == GLSLC_MAGIC_NUMBER)
+        {
+            const uint8_t* base = reinterpret_cast<const uint8_t*>(output);
+            for (uint32_t section = 0; section < output->numSections; ++section)
+            {
+                const GLSLCsectionHeaderUnion& header =
+                    output->headers[section];
+                if (header.genericHeader.common.type !=
+                    GLSLC_SECTION_TYPE_REFLECTION)
+                {
+                    continue;
+                }
+                const auto* reflection =
+                    reinterpret_cast<const GLSLCprogramReflectionHeader*>(
+                        base + header.genericHeader.common.dataOffset);
+                have_reflection = parse_reflection_bindings_from_header(
+                    reflection,
+                    base,
+                    &reflection_bindings);
+                break;
+            }
+        }
+        if (out_bindings)
+        {
+            ProgramBindings final_bindings = {};
+            if (have_glsl_bindings)
+            {
+                final_bindings = glsl_bindings;
+            }
+            if (have_reflection)
+            {
+                auto apply_binding = [](int& dst, int src) {
+                    if (src >= 0)
+                    {
+                        dst = src;
+                    }
+                };
+                apply_binding(final_bindings.pls_color,
+                              reflection_bindings.pls_color);
+                apply_binding(final_bindings.pls_clip,
+                              reflection_bindings.pls_clip);
+                apply_binding(final_bindings.pls_scratch,
+                              reflection_bindings.pls_scratch);
+                apply_binding(final_bindings.pls_coverage,
+                              reflection_bindings.pls_coverage);
+                if (!have_glsl_bindings)
+                {
+                    final_bindings = reflection_bindings;
+                }
+            }
+            *out_bindings = final_bindings;
+#if RIVE_NVN_ENABLE_REFLECTION_LOGS
+            {
+                static bool s_logged_final_bindings = false;
+                if (!s_logged_final_bindings)
+                {
+                    const char* source =
+                        have_reflection ? "reflection" :
+                        (have_glsl_bindings ? "glsl" : "fallback");
+                    debug_log(
+                        "[rive nvn] final PLS bindings color=%d clip=%d scratch=%d coverage=%d (source=%s)",
+                        final_bindings.pls_color,
+                        final_bindings.pls_clip,
+                        final_bindings.pls_scratch,
+                        final_bindings.pls_coverage,
+                        source);
+                    s_logged_final_bindings = true;
+                }
+            }
+#endif
+        }
+        if (!have_glsl_bindings && !have_reflection)
+        {
+            static bool s_logged_reflection_missing = false;
+            if (!s_logged_reflection_missing)
+            {
+                debug_log(
+                    "[rive nvn] shader reflection missing (bind logs may be incomplete)");
+                s_logged_reflection_missing = true;
+            }
+        }
+#if RIVE_NVN_ENABLE_REFLECTION_LOGS
+        {
+            static bool s_logged_reflection_status = false;
+            if (!s_logged_reflection_status)
+            {
+                debug_log(
+                    "[rive nvn] reflection present=%d section=%d",
+                    have_reflection ? 1 : 0,
+                    compile_object.reflectionSection ? 1 : 0);
+                s_logged_reflection_status = true;
+            }
+        }
+#endif
         ShaderBinary vertex_binary;
         ShaderBinary fragment_binary;
         bool have_vertex =
@@ -1495,6 +2414,7 @@ private:
     size_t m_control_memory_size = 0;
     std::vector<std::unique_ptr<nvn_api::Buffer>> m_code_buffers;
     std::vector<nvn_api::ShaderData> m_shader_data;
+    ProgramBindings m_bindings;
 };
 
 enum class ProgramStage
@@ -1502,6 +2422,115 @@ enum class ProgramStage
     vertex,
     fragment,
 };
+
+static void append_shader_feature_defines(std::vector<const char*>& defines,
+                                          rive::gpu::ShaderFeatures features)
+{
+    for (size_t i = 0; i < rive::gpu::kShaderFeatureCount; ++i)
+    {
+        rive::gpu::ShaderFeatures feature =
+            static_cast<rive::gpu::ShaderFeatures>(1 << i);
+        if (features & feature)
+        {
+            defines.push_back(rive::gpu::GetShaderFeatureGLSLName(feature));
+        }
+    }
+}
+
+static void append_shader_misc_defines(std::vector<const char*>& defines,
+                                       rive::gpu::ShaderMiscFlags miscFlags)
+{
+    if (miscFlags & rive::gpu::ShaderMiscFlags::fixedFunctionColorOutput)
+    {
+        defines.push_back(GLSL_FIXED_FUNCTION_COLOR_OUTPUT);
+    }
+    if (miscFlags & rive::gpu::ShaderMiscFlags::clockwiseFill)
+    {
+        defines.push_back(GLSL_CLOCKWISE_FILL);
+    }
+    if (miscFlags & rive::gpu::ShaderMiscFlags::borrowedCoveragePass)
+    {
+        defines.push_back(GLSL_BORROWED_COVERAGE_PASS);
+    }
+}
+
+static void append_draw_type_defines(std::vector<const char*>& defines,
+                                     rive::gpu::nvn::ShaderStage stage,
+                                     rive::gpu::DrawType drawType,
+                                     rive::gpu::nvn::AtlasTextureType atlasTextureType,
+                                     rive::gpu::ShaderMiscFlags miscFlags)
+{
+    switch (drawType)
+    {
+        case rive::gpu::DrawType::midpointFanPatches:
+        case rive::gpu::DrawType::midpointFanCenterAAPatches:
+        case rive::gpu::DrawType::outerCurvePatches:
+        case rive::gpu::DrawType::msaaStrokes:
+        case rive::gpu::DrawType::msaaMidpointFanBorrowedCoverage:
+        case rive::gpu::DrawType::msaaMidpointFans:
+        case rive::gpu::DrawType::msaaMidpointFanStencilReset:
+        case rive::gpu::DrawType::msaaMidpointFanPathsStencil:
+        case rive::gpu::DrawType::msaaMidpointFanPathsCover:
+        case rive::gpu::DrawType::msaaOuterCubics:
+            if (stage == rive::gpu::nvn::ShaderStage::vertex)
+            {
+                defines.push_back(GLSL_ENABLE_INSTANCE_INDEX);
+            }
+            defines.push_back(GLSL_DRAW_PATH);
+            break;
+        case rive::gpu::DrawType::interiorTriangulation:
+            defines.push_back(GLSL_DRAW_INTERIOR_TRIANGLES);
+            break;
+        case rive::gpu::DrawType::atlasBlit:
+            defines.push_back(GLSL_ATLAS_BLIT);
+            switch (atlasTextureType)
+            {
+                case rive::gpu::nvn::AtlasTextureType::r32uiFloatBits:
+                    defines.push_back(GLSL_ATLAS_TEXTURE_R32UI_FLOAT_BITS);
+                    break;
+                case rive::gpu::nvn::AtlasTextureType::r32iFixedPoint:
+                    defines.push_back(GLSL_ATLAS_TEXTURE_R32I_FIXED_POINT);
+                    break;
+                case rive::gpu::nvn::AtlasTextureType::rgba8:
+                    defines.push_back(GLSL_ATLAS_TEXTURE_RGBA8_UNORM);
+                    break;
+                case rive::gpu::nvn::AtlasTextureType::r32f:
+                case rive::gpu::nvn::AtlasTextureType::r16f:
+                    break;
+            }
+            break;
+        case rive::gpu::DrawType::imageRect:
+            defines.push_back(GLSL_DRAW_IMAGE);
+            defines.push_back(GLSL_DRAW_IMAGE_RECT);
+            break;
+        case rive::gpu::DrawType::imageMesh:
+            defines.push_back(GLSL_DRAW_IMAGE);
+            defines.push_back(GLSL_DRAW_IMAGE_MESH);
+            break;
+        case rive::gpu::DrawType::renderPassInitialize:
+            defines.push_back(GLSL_INITIALIZE_PLS);
+            defines.push_back(GLSL_DRAW_RENDER_TARGET_UPDATE_BOUNDS);
+            if (miscFlags & rive::gpu::ShaderMiscFlags::storeColorClear)
+            {
+                defines.push_back(GLSL_STORE_COLOR_CLEAR);
+            }
+            if (miscFlags & rive::gpu::ShaderMiscFlags::swizzleColorBGRAToRGBA)
+            {
+                defines.push_back(GLSL_SWIZZLE_COLOR_BGRA_TO_RGBA);
+            }
+            break;
+        case rive::gpu::DrawType::renderPassResolve:
+            defines.push_back(GLSL_DRAW_RENDER_TARGET_UPDATE_BOUNDS);
+            defines.push_back(GLSL_RESOLVE_PLS);
+            if (miscFlags & rive::gpu::ShaderMiscFlags::coalescedResolveAndTransfer)
+            {
+                defines.push_back(GLSL_COALESCED_PLS_RESOLVE_AND_TRANSFER);
+            }
+            break;
+        case rive::gpu::DrawType::msaaStencilClipReset:
+            break;
+    }
+}
 
 static std::string build_program_source(
     ProgramStage stage,
@@ -1545,6 +2574,107 @@ static std::string build_program_source(
     }
 
     return shader.str();
+}
+
+static bool build_msaa_program_sources(
+    const rive::gpu::nvn::ShaderBuildParams& params,
+    const rive::gpu::PlatformFeatures& platform_features,
+    rive::gpu::nvn::ProgramSources* out_sources)
+{
+    if (!out_sources)
+    {
+        return false;
+    }
+
+    std::vector<const char*> base_defines;
+    base_defines.reserve(32);
+    append_shader_misc_defines(base_defines, params.miscFlags);
+    append_shader_feature_defines(base_defines, params.shaderFeatures);
+    base_defines.push_back(GLSL_RENDER_MODE_MSAA);
+    if (!params.caps.supportsShaderStorageBuffers)
+    {
+        base_defines.push_back(GLSL_DISABLE_SHADER_STORAGE_BUFFERS);
+    }
+    if (params.caps.needsFloatingPointTessellationTexture)
+    {
+        base_defines.push_back(GLSL_TESS_TEXTURE_FLOATING_POINT);
+    }
+    if (params.caps.isMali)
+    {
+        base_defines.push_back(GLSL_GL_RENDERER_MALI);
+    }
+
+    std::vector<const char*> vertex_defines = base_defines;
+    std::vector<const char*> fragment_defines = base_defines;
+    append_draw_type_defines(vertex_defines,
+                             rive::gpu::nvn::ShaderStage::vertex,
+                             params.drawType,
+                             params.atlasTextureType,
+                             params.miscFlags);
+    append_draw_type_defines(fragment_defines,
+                             rive::gpu::nvn::ShaderStage::fragment,
+                             params.drawType,
+                             params.atlasTextureType,
+                             params.miscFlags);
+
+    std::vector<const char*> vertex_sources;
+    std::vector<const char*> fragment_sources;
+
+    switch (params.drawType)
+    {
+        case rive::gpu::DrawType::msaaStrokes:
+        case rive::gpu::DrawType::msaaMidpointFanBorrowedCoverage:
+        case rive::gpu::DrawType::msaaMidpointFans:
+        case rive::gpu::DrawType::msaaMidpointFanStencilReset:
+        case rive::gpu::DrawType::msaaMidpointFanPathsStencil:
+        case rive::gpu::DrawType::msaaMidpointFanPathsCover:
+        case rive::gpu::DrawType::msaaOuterCubics:
+        case rive::gpu::DrawType::interiorTriangulation:
+        case rive::gpu::DrawType::atlasBlit:
+            vertex_sources.push_back(rive::gpu::glsl::draw_path_common);
+            vertex_sources.push_back(rive::gpu::glsl::draw_path_vert);
+            fragment_sources.push_back(rive::gpu::glsl::draw_path_common);
+            fragment_sources.push_back(rive::gpu::glsl::draw_path_vert);
+            if (params.shaderFeatures & rive::gpu::ShaderFeatures::ENABLE_ADVANCED_BLEND)
+            {
+                fragment_sources.push_back(rive::gpu::glsl::advanced_blend);
+            }
+            fragment_sources.push_back(rive::gpu::glsl::draw_msaa_object_frag);
+            break;
+
+        case rive::gpu::DrawType::msaaStencilClipReset:
+            vertex_sources.push_back(rive::gpu::glsl::stencil_draw);
+            fragment_sources.push_back(rive::gpu::glsl::stencil_draw);
+            break;
+
+        case rive::gpu::DrawType::imageMesh:
+            vertex_sources.push_back(rive::gpu::glsl::draw_image_mesh_vert);
+            fragment_sources.push_back(rive::gpu::glsl::draw_image_mesh_vert);
+            if (params.shaderFeatures & rive::gpu::ShaderFeatures::ENABLE_ADVANCED_BLEND)
+            {
+                fragment_sources.push_back(rive::gpu::glsl::advanced_blend);
+            }
+            fragment_sources.push_back(rive::gpu::glsl::draw_msaa_object_frag);
+            break;
+
+        case rive::gpu::DrawType::midpointFanPatches:
+        case rive::gpu::DrawType::midpointFanCenterAAPatches:
+        case rive::gpu::DrawType::outerCurvePatches:
+        case rive::gpu::DrawType::imageRect:
+        case rive::gpu::DrawType::renderPassInitialize:
+        case rive::gpu::DrawType::renderPassResolve:
+            return false;
+    }
+
+    out_sources->vertex = build_program_source(ProgramStage::vertex,
+                                               vertex_defines,
+                                               vertex_sources,
+                                               platform_features);
+    out_sources->fragment = build_program_source(ProgramStage::fragment,
+                                                 fragment_defines,
+                                                 fragment_sources,
+                                                 platform_features);
+    return true;
 }
 
 static nvn_api::BlendEquation to_nvn_blend_equation(rive::gpu::BlendEquation eq)
@@ -1886,9 +3016,14 @@ public:
         m_triangleVertexBuffer.setAllocator(m_allocator);
         m_coverageBuffer.setAllocator(m_allocator);
 
+        // Disable PLS on NVN; force MSAA path instead.
+#if RIVE_NVN_DISABLE_PLS
+        m_platformFeatures.supportsAtomicMode = false;
+        m_platformFeatures.supportsRasterOrderingMode = false;
+#else
         m_platformFeatures.supportsAtomicMode = true;
-        m_platformFeatures.supportsRasterOrderingMode =
-            RIVE_NVN_ENABLE_RASTER_ORDERING != 0;
+        m_platformFeatures.supportsRasterOrderingMode = false;
+#endif
         m_platformFeatures.supportsClockwiseMode = false;
         m_platformFeatures.supportsClockwiseFixedFunctionMode = false;
         m_platformFeatures.supportsClockwiseAtomicMode = false;
@@ -1909,6 +3044,9 @@ public:
         m_supportsFragmentShaderInterlock = supports_interlock != 0;
         debug_log("[rive] fragment shader interlock support=%d",
                   m_supportsFragmentShaderInterlock ? 1 : 0);
+#endif
+#if RIVE_NVN_DISABLE_PLS
+        debug_log("[rive] NVN PLS disabled; forcing MSAA rendering path");
 #endif
 #if RIVE_NVN_ENABLE_RASTER_ORDERING
         debug_log("[rive] raster ordering support enabled");
@@ -2304,6 +3442,7 @@ public:
             }
         }
 
+#if !RIVE_NVN_DISABLE_PLS
         static int s_pls_width = -1;
         static int s_pls_height = -1;
         static unsigned long long s_pls_color_img = 0;
@@ -2346,6 +3485,7 @@ public:
             s_pls_scratch_img = scratch_img;
             s_pls_coverage_img = coverage_img;
         }
+#endif
 
         command_buffer->SetRenderEnable(true);
         command_buffer->SetRasterizerDiscard(false);
@@ -2356,6 +3496,8 @@ public:
         render_color_ramp(desc, command_buffer);
         render_tessellation(desc, command_buffer);
         render_atlas(desc, command_buffer);
+        // Ensure render-to-texture outputs are visible for subsequent sampling.
+        command_buffer->Barrier(texture_visibility_barrier_bits());
 
         auto* color_texture =
             reinterpret_cast<nvn_api::Texture*>(render_target->colorTexture());
@@ -2408,7 +3550,13 @@ public:
             }
         }
 
-        if (desc.interlockMode == gpu::InterlockMode::atomics)
+#if !RIVE_NVN_DISABLE_PLS
+        const bool has_pls_images =
+            m_plsColorTexture.initialized ||
+            m_plsClipTexture.initialized ||
+            m_plsScratchTexture.initialized ||
+            m_plsCoverageTexture.initialized;
+        if (has_pls_images)
         {
             nvn_api::CopyRegion region = {};
             region.xoffset = 0;
@@ -2451,7 +3599,21 @@ public:
 
             if (m_plsCoverageTexture.initialized)
             {
-                uint32_t clear_values[4] = {desc.coverageClearValue, 0, 0, 0};
+                uint32_t coverage_clear = desc.coverageClearValue;
+#ifdef RIVE_NVN_PLS_COVERAGE_CLEAR_VALUE
+                coverage_clear =
+                    static_cast<uint32_t>(RIVE_NVN_PLS_COVERAGE_CLEAR_VALUE);
+                static bool s_logged_pls_coverage_clear_override = false;
+                if (!s_logged_pls_coverage_clear_override)
+                {
+                    debug_log(
+                        "[rive] pls coverage clear override=0x%08x (was 0x%08x)",
+                        static_cast<unsigned int>(coverage_clear),
+                        static_cast<unsigned int>(desc.coverageClearValue));
+                    s_logged_pls_coverage_clear_override = true;
+                }
+#endif
+                uint32_t clear_values[4] = {coverage_clear, 0, 0, 0};
                 command_buffer->ClearTextureui(
                     &m_plsCoverageTexture.texture,
                     &m_plsCoverageTexture.view,
@@ -2460,9 +3622,7 @@ public:
                     nvn_api::ClearColorMask(nvn_api::ClearColorMask::RGBA));
             }
 
-            if ((desc.combinedShaderFeatures &
-                 gpu::ShaderFeatures::ENABLE_CLIPPING) &&
-                m_plsClipTexture.initialized)
+            if (m_plsClipTexture.initialized)
             {
 #if RIVE_NVN_PLS_CLIP_RGBA8
                 const float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -2483,17 +3643,28 @@ public:
 #endif
             }
 
+            if (m_plsScratchTexture.initialized)
+            {
+                const float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                command_buffer->ClearTexture(
+                    &m_plsScratchTexture.texture,
+                    &m_plsScratchTexture.view,
+                    &region,
+                    clear_color,
+                    nvn_api::ClearColorMask(nvn_api::ClearColorMask::RGBA));
+            }
+
             // ClearTexture/CopyTextureToTexture use the 3D engine; ensure writes
             // are visible before the PLS images are accessed by shaders.
-            command_buffer->Barrier(nvn_api::BarrierBits::ORDER_FRAGMENTS |
-                                    nvn_api::BarrierBits::INVALIDATE_TEXTURE);
+            command_buffer->Barrier(pls_storage_barrier_bits());
         }
+#endif
 
         compile_draw_list_shaders(desc);
         execute_draw_list(desc, command_buffer);
 
-        if (desc.interlockMode == gpu::InterlockMode::atomics &&
-            !desc.fixedFunctionColorOutput &&
+#if !RIVE_NVN_DISABLE_PLS
+        if (!desc.fixedFunctionColorOutput &&
             m_plsColorTexture.initialized)
         {
             static bool s_logged_pls_copy = false;
@@ -2513,8 +3684,7 @@ public:
             nvn_api::TextureView dst_view;
             init_texture_view(&dst_view, color_texture);
 
-            command_buffer->Barrier(nvn_api::BarrierBits::ORDER_FRAGMENTS |
-                                    nvn_api::BarrierBits::INVALIDATE_TEXTURE);
+            command_buffer->Barrier(pls_storage_barrier_bits());
             command_buffer->CopyTextureToTexture(
                 &m_plsColorTexture.texture,
                 &m_plsColorTexture.view,
@@ -2523,7 +3693,10 @@ public:
                 &dst_view,
                 &region,
                 nvn_api::CopyFlags::NONE);
+            // Reset storage usage after a copy (emulators often track this as read-only).
+            command_buffer->Barrier(pls_storage_barrier_bits());
         }
+#endif
     }
 
     double secondsNow() const override
@@ -2544,7 +3717,9 @@ private:
                                  nvn_api::Device* device);
     void bind_common_buffers(const gpu::FlushDescriptor& desc,
                              nvn_api::CommandBuffer* command_buffer);
-    void bind_common_textures(nvn_api::CommandBuffer* command_buffer);
+    void bind_common_textures(nvn_api::CommandBuffer* command_buffer,
+                              const ProgramBindings* bindings);
+    void reset_bind_cache();
     bool ensure_resource_textures(const gpu::FlushDescriptor& desc,
                                   nvn_api::Device* device);
     void render_color_ramp(const gpu::FlushDescriptor& desc,
@@ -2570,6 +3745,7 @@ private:
     {
         ShaderBuildParams params = {};
         params.drawType = batch.drawType;
+        params.interlockMode = desc.interlockMode;
 
         ShaderFeatures allowed =
             ShaderFeaturesMaskFor(batch.drawType, desc.interlockMode);
@@ -2577,11 +3753,35 @@ private:
                                   desc.combinedShaderFeatures;
         params.shaderFeatures = combined & allowed;
 
+#if RIVE_NVN_DISABLE_PLS
+        if (desc.interlockMode == gpu::InterlockMode::msaa)
+        {
+            // NVN MSAA path: force fixed-function color output and avoid
+            // advanced blend shaders (dstColor reads) to prevent black output.
+            params.shaderFeatures &=
+                ~(ShaderFeatures::ENABLE_ADVANCED_BLEND |
+                  ShaderFeatures::ENABLE_HSL_BLEND_MODES);
+            static bool s_logged_force_fixed_color = false;
+            if (!s_logged_force_fixed_color)
+            {
+                debug_log(
+                    "[rive] forcing fixed-function color output for NVN MSAA");
+                s_logged_force_fixed_color = true;
+            }
+        }
+#endif
+
         ShaderMiscFlags misc = batch.shaderMiscFlags;
         if (desc.fixedFunctionColorOutput)
         {
             misc |= ShaderMiscFlags::fixedFunctionColorOutput;
         }
+#if RIVE_NVN_DISABLE_PLS
+        if (desc.interlockMode == gpu::InterlockMode::msaa)
+        {
+            misc |= ShaderMiscFlags::fixedFunctionColorOutput;
+        }
+#endif
         if (wants_coalesced_resolve(desc, batch))
         {
             misc |= ShaderMiscFlags::coalescedResolveAndTransfer;
@@ -2614,6 +3814,7 @@ private:
         key.drawType = params.drawType;
         key.shaderFeatures = params.shaderFeatures;
         key.miscFlags = params.miscFlags;
+        key.interlockMode = params.interlockMode;
         key.atlasTextureType = params.atlasTextureType;
 
         auto it = m_programCache.find(key);
@@ -2622,7 +3823,61 @@ private:
             return it->second.get();
         }
 
-        auto sources = rive::gpu::nvn::BuildAtomicProgramSources(params, "460");
+        rive::gpu::nvn::ProgramSources sources;
+        bool built_sources = false;
+        switch (params.interlockMode)
+        {
+            case gpu::InterlockMode::msaa:
+                built_sources = build_msaa_program_sources(params,
+                                                          m_platformFeatures,
+                                                          &sources);
+                break;
+            case gpu::InterlockMode::atomics:
+#if RIVE_NVN_DISABLE_PLS
+                built_sources = false;
+#else
+                sources =
+                    rive::gpu::nvn::BuildAtomicProgramSources(params, "460");
+                built_sources = true;
+#endif
+                break;
+            case gpu::InterlockMode::rasterOrdering:
+            case gpu::InterlockMode::clockwise:
+            case gpu::InterlockMode::clockwiseAtomic:
+                built_sources = false;
+                break;
+        }
+        if (!built_sources)
+        {
+            static bool s_logged_build_failure = false;
+            if (!s_logged_build_failure)
+            {
+                debug_log("[rive] shader build skipped drawType=%d interlock=%d",
+                          static_cast<int>(params.drawType),
+                          static_cast<int>(params.interlockMode));
+                s_logged_build_failure = true;
+            }
+            m_programCache.emplace(key, std::unique_ptr<NvnShaderProgram>());
+            return nullptr;
+        }
+        if (kDumpShaders)
+        {
+            static int s_dumped = 0;
+            if (s_dumped < 2)
+            {
+                char label[128];
+                std::snprintf(label,
+                              sizeof(label),
+                              "drawType_%d_feat_%u_misc_%u_atlas_%d",
+                              static_cast<int>(params.drawType),
+                              static_cast<unsigned int>(params.shaderFeatures),
+                              static_cast<unsigned int>(params.miscFlags),
+                              static_cast<int>(params.atlasTextureType));
+                dump_shader_source("program", "vert", sources.vertex.c_str());
+                dump_shader_source("program", "frag", sources.fragment.c_str());
+                s_dumped++;
+            }
+        }
         auto program = std::make_unique<NvnShaderProgram>();
         if (!program->initialize(reinterpret_cast<nvn_api::Device*>(m_device),
                                  m_allocator,
@@ -2800,6 +4055,9 @@ private:
         params.shaderFeatures = ShaderFeatures::NONE;
         params.miscFlags = ShaderMiscFlags::none;
         params.atlasTextureType = m_atlasTextureType;
+        params.interlockMode = m_platformFeatures.supportsAtomicMode
+                                   ? gpu::InterlockMode::atomics
+                                   : gpu::InterlockMode::msaa;
         params.caps.avoidFlatVaryings = m_platformFeatures.avoidFlatVaryings;
         params.caps.supportsShaderStorageBuffers = true;
         params.caps.framebufferBottomUp = m_platformFeatures.framebufferBottomUp;
@@ -2807,21 +4065,45 @@ private:
         params.caps.needsFloatingPointTessellationTexture = true;
         params.caps.isMali = false;
 
-        static const DrawType kPrewarmDrawTypes[] = {
-            DrawType::renderPassInitialize,
-            DrawType::renderPassResolve,
-            DrawType::midpointFanPatches,
-            DrawType::midpointFanCenterAAPatches,
-            DrawType::outerCurvePatches,
-            DrawType::interiorTriangulation,
-            DrawType::imageRect,
-            DrawType::imageMesh,
-            DrawType::atlasBlit,
-        };
-        for (DrawType draw_type : kPrewarmDrawTypes)
+        if (params.interlockMode == gpu::InterlockMode::msaa)
         {
-            params.drawType = draw_type;
-            get_or_create_program(params);
+            static const DrawType kPrewarmDrawTypesMsaa[] = {
+                DrawType::msaaStrokes,
+                DrawType::msaaMidpointFanBorrowedCoverage,
+                DrawType::msaaMidpointFans,
+                DrawType::msaaMidpointFanStencilReset,
+                DrawType::msaaMidpointFanPathsStencil,
+                DrawType::msaaMidpointFanPathsCover,
+                DrawType::msaaOuterCubics,
+                DrawType::interiorTriangulation,
+                DrawType::imageMesh,
+                DrawType::atlasBlit,
+                DrawType::msaaStencilClipReset,
+            };
+            for (DrawType draw_type : kPrewarmDrawTypesMsaa)
+            {
+                params.drawType = draw_type;
+                get_or_create_program(params);
+            }
+        }
+        else
+        {
+            static const DrawType kPrewarmDrawTypesAtomic[] = {
+                DrawType::renderPassInitialize,
+                DrawType::renderPassResolve,
+                DrawType::midpointFanPatches,
+                DrawType::midpointFanCenterAAPatches,
+                DrawType::outerCurvePatches,
+                DrawType::interiorTriangulation,
+                DrawType::imageRect,
+                DrawType::imageMesh,
+                DrawType::atlasBlit,
+            };
+            for (DrawType draw_type : kPrewarmDrawTypesAtomic)
+            {
+                params.drawType = draw_type;
+                get_or_create_program(params);
+            }
         }
 
         debug_log("[rive] prewarm shaders done");
@@ -2873,6 +4155,8 @@ private:
     nvn_api::MemoryPool m_descriptorPool;
     void* m_descriptorMemory = nullptr;
     size_t m_descriptorMemorySize = 0;
+    size_t m_samplerBytes = 0;
+    int m_textureDescriptorSize = 0;
     nvn_api::MemoryPool m_samplerDescriptorPool;
     nvn_api::MemoryPool m_textureDescriptorPool;
     void* m_samplerDescriptorMemory = nullptr;
@@ -2895,6 +4179,10 @@ private:
     int m_nextSamplerId = 0;
     int m_defaultSamplerId = -1;
     std::vector<std::unique_ptr<nvn_api::Sampler>> m_samplers;
+
+    std::array<nvn_api::TextureHandle, 32> m_boundTexturesVert = {};
+    std::array<nvn_api::TextureHandle, 32> m_boundTexturesFrag = {};
+    std::array<nvn_api::ImageHandle, 16> m_boundImagesFrag = {};
 
     bool m_vertexStatesInitialized = false;
     nvn_api::VertexAttribState m_patchAttribs[2];
@@ -3029,6 +4317,8 @@ bool RenderContextNVNImpl::ensure_descriptor_pools(nvn_api::Device* device)
         free_memory(m_descriptorMemory, m_allocator);
         m_descriptorMemory = nullptr;
         m_descriptorMemorySize = 0;
+        m_samplerBytes = 0;
+        m_textureDescriptorSize = 0;
         m_descriptorPoolsInitialized = false;
         m_texturePoolSize = 0;
         m_samplerPoolSize = 0;
@@ -3098,6 +4388,8 @@ bool RenderContextNVNImpl::ensure_descriptor_pools(nvn_api::Device* device)
                      static_cast<size_t>(texture_pool_count),
                  kPoolAlignment);
     size_t total_bytes = sampler_bytes + texture_bytes;
+    m_samplerBytes = sampler_bytes;
+    m_textureDescriptorSize = texture_descriptor_size;
 
     m_descriptorMemory =
         alloc_memory(total_bytes, kPoolAlignment, m_allocator);
@@ -3796,39 +5088,158 @@ void RenderContextNVNImpl::bind_common_buffers(
 }
 
 void RenderContextNVNImpl::bind_common_textures(
-    nvn_api::CommandBuffer* command_buffer)
+    nvn_api::CommandBuffer* command_buffer,
+    const ProgramBindings* bindings)
 {
     if (!command_buffer)
     {
         return;
     }
 
-    auto bind_texture = [&](int idx, nvn_api::TextureHandle handle) {
+    auto bind_texture = [&](int idx,
+                            nvn_api::TextureHandle handle,
+                            const char* label) {
         if (handle == 0)
         {
             return;
         }
+        if (idx < 0 || idx >= static_cast<int>(m_boundTexturesFrag.size()))
+        {
+            return;
+        }
+        if (m_boundTexturesFrag[static_cast<size_t>(idx)] == handle &&
+            m_boundTexturesVert[static_cast<size_t>(idx)] == handle)
+        {
+            return;
+        }
+#if RIVE_NVN_ENABLE_BIND_LOGS
+        if (label)
+        {
+            debug_log("[rive nvn] bind texture %s idx=%d handle=0x%llx",
+                      label,
+                      idx,
+                      static_cast<unsigned long long>(handle));
+        }
+#endif
         command_buffer->BindTexture(nvn_api::ShaderStage::VERTEX, idx, handle);
         command_buffer->BindTexture(nvn_api::ShaderStage::FRAGMENT, idx, handle);
+        m_boundTexturesVert[static_cast<size_t>(idx)] = handle;
+        m_boundTexturesFrag[static_cast<size_t>(idx)] = handle;
     };
 
-    auto bind_image = [&](int idx, nvn_api::ImageHandle handle) {
+    auto bind_image = [&](int idx,
+                          nvn_api::ImageHandle handle,
+                          const char* label) {
         if (handle == 0)
         {
             return;
         }
+        if (idx < 0 || idx >= static_cast<int>(m_boundImagesFrag.size()))
+        {
+            return;
+        }
+        if (m_boundImagesFrag[static_cast<size_t>(idx)] == handle)
+        {
+            return;
+        }
+#if RIVE_NVN_ENABLE_BIND_LOGS
+        if (label)
+        {
+            debug_log("[rive nvn] bind image %s idx=%d handle=0x%llx",
+                      label,
+                      idx,
+                      static_cast<unsigned long long>(handle));
+        }
+#endif
         command_buffer->BindImage(nvn_api::ShaderStage::FRAGMENT, idx, handle);
+        m_boundImagesFrag[static_cast<size_t>(idx)] = handle;
     };
 
-    bind_texture(TESS_VERTEX_TEXTURE_IDX, m_tessTexture.handle);
-    bind_texture(GRAD_TEXTURE_IDX, m_gradientTexture.handle);
-    bind_texture(FEATHER_TEXTURE_IDX, m_featherTexture.handle);
-    bind_texture(ATLAS_TEXTURE_IDX, m_atlasTexture.handle);
+    bind_texture(TESS_VERTEX_TEXTURE_IDX,
+                 m_tessTexture.handle,
+                 "tess");
+    bind_texture(GRAD_TEXTURE_IDX,
+                 m_gradientTexture.handle,
+                 "grad");
+    bind_texture(FEATHER_TEXTURE_IDX,
+                 m_featherTexture.handle,
+                 "feather");
+    bind_texture(ATLAS_TEXTURE_IDX,
+                 m_atlasTexture.handle,
+                 "atlas");
 
-    bind_image(COLOR_PLANE_IDX, m_plsColorTexture.image_handle);
-    bind_image(CLIP_PLANE_IDX, m_plsClipTexture.image_handle);
-    bind_image(SCRATCH_COLOR_PLANE_IDX, m_plsScratchTexture.image_handle);
-    bind_image(COVERAGE_PLANE_IDX, m_plsCoverageTexture.image_handle);
+#if RIVE_NVN_DISABLE_PLS
+    return;
+#endif
+
+    const bool bindings_valid =
+#if RIVE_NVN_PLS_FIXED_LAYOUT
+        false;
+#else
+        bindings &&
+        (bindings->pls_color >= 0 || bindings->pls_clip >= 0 ||
+         bindings->pls_scratch >= 0 || bindings->pls_coverage >= 0);
+#endif
+
+    auto resolve_image_index = [&](int idx, int fallback,
+                                   const char* label) {
+        int resolved = idx;
+        if (!bindings_valid)
+        {
+            resolved = fallback;
+        }
+        if (resolved < 0)
+        {
+            return -1;
+        }
+        if (resolved >= static_cast<int>(m_boundImagesFrag.size()))
+        {
+#if RIVE_NVN_ENABLE_BIND_LOGS
+            debug_log("[rive nvn] binding %s idx=%d out of range, skipping",
+                      label ? label : "(unknown)",
+                      resolved);
+#endif
+            return -1;
+        }
+        return resolved;
+    };
+
+    const int color_idx = resolve_image_index(
+        bindings ? bindings->pls_color : -1,
+        COLOR_PLANE_IDX,
+        "pls_color");
+    const int clip_idx = resolve_image_index(
+        bindings ? bindings->pls_clip : -1,
+        CLIP_PLANE_IDX,
+        "pls_clip");
+    const int scratch_idx = resolve_image_index(
+        bindings ? bindings->pls_scratch : -1,
+        SCRATCH_COLOR_PLANE_IDX,
+        "pls_scratch");
+    const int coverage_idx = resolve_image_index(
+        bindings ? bindings->pls_coverage : -1,
+        COVERAGE_PLANE_IDX,
+        "pls_coverage");
+
+    bind_image(color_idx,
+               m_plsColorTexture.image_handle,
+               "pls_color");
+    bind_image(clip_idx,
+               m_plsClipTexture.image_handle,
+               "pls_clip");
+    bind_image(scratch_idx,
+               m_plsScratchTexture.image_handle,
+               "pls_scratch");
+    bind_image(coverage_idx,
+               m_plsCoverageTexture.image_handle,
+               "pls_coverage");
+}
+
+void RenderContextNVNImpl::reset_bind_cache()
+{
+    m_boundTexturesVert.fill(0);
+    m_boundTexturesFrag.fill(0);
+    m_boundImagesFrag.fill(0);
 }
 
 bool RenderContextNVNImpl::ensure_resource_textures(
@@ -3841,6 +5252,15 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         debug_log("[rive] ensure_resource_textures enter");
         s_logged_enter = true;
     }
+    {
+        static int s_last_interlock = -1;
+        const int interlock = static_cast<int>(desc.interlockMode);
+        if (s_last_interlock != interlock)
+        {
+            debug_log("[rive] pls interlock mode=%d", interlock);
+            s_last_interlock = interlock;
+        }
+    }
     static bool s_logged_descriptor_fail = false;
     static bool s_logged_sampler_fail = false;
     static bool s_logged_gradient_fail = false;
@@ -3851,6 +5271,10 @@ bool RenderContextNVNImpl::ensure_resource_textures(
     static bool s_logged_pls_clip_fail = false;
     static bool s_logged_pls_scratch_fail = false;
     static bool s_logged_pls_coverage_fail = false;
+    static bool s_logged_pls_color_desc = false;
+    static bool s_logged_pls_clip_desc = false;
+    static bool s_logged_pls_scratch_desc = false;
+    static bool s_logged_pls_coverage_desc = false;
     if (!device)
     {
         return false;
@@ -4128,6 +5552,10 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         }
     }
 
+#if RIVE_NVN_DISABLE_PLS
+    return true;
+#endif
+
     {
         static bool s_logged_target_ptr = false;
         if (!s_logged_target_ptr)
@@ -4189,10 +5617,35 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         }
     }
 
+    const nvn_api::TextureTarget pls_target =
+        nvn_api::TextureTarget::TARGET_2D;
+    static bool s_logged_pls_target = false;
+    if (!s_logged_pls_target)
+    {
+        debug_log("[rive] PLS storage textures hardcoded to TARGET_2D");
+        s_logged_pls_target = true;
+    }
+
     if (pls_width > 0 && pls_height > 0)
     {
         const nvn_api::TextureFlags pls_flags =
             nvn_api::TextureFlags::IMAGE;
+        const nvn_api::Format color_format =
+            static_cast<nvn_api::Format>(RIVE_NVN_PLS_COLOR_FORMAT);
+        const nvn_api::Format clip_format =
+            static_cast<nvn_api::Format>(RIVE_NVN_PLS_CLIP_FORMAT);
+        const nvn_api::Format scratch_format =
+            static_cast<nvn_api::Format>(RIVE_NVN_PLS_SCRATCH_FORMAT);
+        static bool s_logged_pls_formats = false;
+        if (!s_logged_pls_formats)
+        {
+            debug_log(
+                "[rive] pls formats color=%d clip=%d scratch=%d",
+                static_cast<int>(color_format),
+                static_cast<int>(clip_format),
+                static_cast<int>(scratch_format));
+            s_logged_pls_formats = true;
+        }
         int color_id = m_plsColorTexture.texture_id >= 0
                            ? m_plsColorTexture.texture_id
                            : m_nextTextureId++;
@@ -4207,9 +5660,9 @@ bool RenderContextNVNImpl::ensure_resource_textures(
                                       color_image,
                                       pls_width,
                                       pls_height,
-                                      nvn_api::Format::RGBA8,
+                                      color_format,
                                       pls_flags,
-                                      nvn_api::TextureTarget::TARGET_2D,
+                                      pls_target,
                                       kPlsPoolFlags,
                                       false,
                                       true))
@@ -4221,6 +5674,16 @@ bool RenderContextNVNImpl::ensure_resource_textures(
             }
             return false;
         }
+        if (!s_logged_pls_color_desc)
+        {
+            dump_texture_descriptor(m_descriptorMemory,
+                                    m_descriptorMemorySize,
+                                    m_samplerBytes,
+                                    m_textureDescriptorSize,
+                                    color_image,
+                                    "pls_color");
+            s_logged_pls_color_desc = true;
+        }
 
         int clip_id = m_plsClipTexture.texture_id >= 0
                           ? m_plsClipTexture.texture_id
@@ -4228,12 +5691,6 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         int clip_image = m_plsClipTexture.image_id >= 0
                              ? m_plsClipTexture.image_id
                              : clip_id;
-        const nvn_api::Format clip_format =
-#if RIVE_NVN_PLS_CLIP_RGBA8
-            nvn_api::Format::RGBA8;
-#else
-            nvn_api::Format::R32UI;
-#endif
         if (!m_plsClipTexture.ensure(device,
                                      m_allocator,
                                      &m_texturePool,
@@ -4244,7 +5701,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
                                      pls_height,
                                      clip_format,
                                      pls_flags,
-                                     nvn_api::TextureTarget::TARGET_2D,
+                                     pls_target,
                                      kPlsPoolFlags,
                                      false,
                                      true))
@@ -4255,6 +5712,16 @@ bool RenderContextNVNImpl::ensure_resource_textures(
                 s_logged_pls_clip_fail = true;
             }
             return false;
+        }
+        if (!s_logged_pls_clip_desc)
+        {
+            dump_texture_descriptor(m_descriptorMemory,
+                                    m_descriptorMemorySize,
+                                    m_samplerBytes,
+                                    m_textureDescriptorSize,
+                                    clip_image,
+                                    "pls_clip");
+            s_logged_pls_clip_desc = true;
         }
 
         int scratch_id = m_plsScratchTexture.texture_id >= 0
@@ -4271,9 +5738,9 @@ bool RenderContextNVNImpl::ensure_resource_textures(
                                         scratch_image,
                                         pls_width,
                                         pls_height,
-                                        nvn_api::Format::RGBA8,
+                                        scratch_format,
                                         pls_flags,
-                                        nvn_api::TextureTarget::TARGET_2D,
+                                        pls_target,
                                         kPlsPoolFlags,
                                         false,
                                         true))
@@ -4285,12 +5752,32 @@ bool RenderContextNVNImpl::ensure_resource_textures(
             }
             return false;
         }
+        if (!s_logged_pls_scratch_desc)
+        {
+            dump_texture_descriptor(m_descriptorMemory,
+                                    m_descriptorMemorySize,
+                                    m_samplerBytes,
+                                    m_textureDescriptorSize,
+                                    scratch_image,
+                                    "pls_scratch");
+            s_logged_pls_scratch_desc = true;
+        }
     }
 
-    if (coverage_width > 0 && coverage_height > 0)
+    if (desc.interlockMode != gpu::InterlockMode::msaa &&
+        coverage_width > 0 && coverage_height > 0)
     {
         const nvn_api::TextureFlags pls_flags =
             nvn_api::TextureFlags::IMAGE;
+        const nvn_api::Format coverage_format =
+            static_cast<nvn_api::Format>(RIVE_NVN_PLS_COVERAGE_FORMAT);
+        static bool s_logged_pls_coverage_format = false;
+        if (!s_logged_pls_coverage_format)
+        {
+            debug_log("[rive] pls coverage format=%d",
+                      static_cast<int>(coverage_format));
+            s_logged_pls_coverage_format = true;
+        }
         int coverage_id = m_plsCoverageTexture.texture_id >= 0
                               ? m_plsCoverageTexture.texture_id
                               : m_nextTextureId++;
@@ -4305,9 +5792,9 @@ bool RenderContextNVNImpl::ensure_resource_textures(
                                          coverage_image,
                                          coverage_width,
                                          coverage_height,
-                                         nvn_api::Format::R32UI,
+                                         coverage_format,
                                          pls_flags,
-                                         nvn_api::TextureTarget::TARGET_2D,
+                                         pls_target,
                                          kPlsPoolFlags,
                                          false,
                                          true))
@@ -4318,6 +5805,16 @@ bool RenderContextNVNImpl::ensure_resource_textures(
                 s_logged_pls_coverage_fail = true;
             }
             return false;
+        }
+        if (!s_logged_pls_coverage_desc)
+        {
+            dump_texture_descriptor(m_descriptorMemory,
+                                    m_descriptorMemorySize,
+                                    m_samplerBytes,
+                                    m_textureDescriptorSize,
+                                    coverage_image,
+                                    "pls_coverage");
+            s_logged_pls_coverage_desc = true;
         }
     }
 
@@ -4693,13 +6190,28 @@ void RenderContextNVNImpl::execute_draw_list(
     {
         return;
     }
+    const bool has_pls_images =
+        m_plsColorTexture.initialized ||
+        m_plsClipTexture.initialized ||
+        m_plsScratchTexture.initialized ||
+        m_plsCoverageTexture.initialized;
+    if (has_pls_images)
+    {
+        // Ensure PLS storage images are in a valid state before the first draw.
+        command_buffer->Barrier(pls_storage_barrier_bits());
+    }
+
+    reset_bind_cache();
 
     auto* render_target = static_cast<RenderTargetNVN*>(desc.renderTarget);
     const int sample_count =
         render_target ? static_cast<int>(render_target->sampleCount()) : 1;
 
     bind_common_buffers(desc, command_buffer);
-    bind_common_textures(command_buffer);
+
+    const NvnShaderProgram* last_program = nullptr;
+    bool saw_msaa_draw = false;
+    bool saw_msaa_color = false;
 
     for (const DrawBatch& batch : *desc.drawList)
     {
@@ -4710,10 +6222,37 @@ void RenderContextNVNImpl::execute_draw_list(
             continue;
         }
 
+        if (program != last_program)
+        {
+            bind_common_textures(command_buffer, &program->bindings());
+            last_program = program;
+        }
+
         program->bind(command_buffer);
 
         gpu::PipelineState pipeline_state;
         gpu::get_pipeline_state(batch, desc, m_platformFeatures, &pipeline_state);
+        if (desc.interlockMode == gpu::InterlockMode::msaa)
+        {
+            saw_msaa_draw = true;
+            if (pipeline_state.colorWriteEnabled)
+            {
+                saw_msaa_color = true;
+            }
+        }
+#if RIVE_NVN_MSAA_DISABLE_STENCIL
+        if (desc.interlockMode == gpu::InterlockMode::msaa)
+        {
+            pipeline_state.stencilTestEnabled = false;
+            pipeline_state.stencilWriteMask = 0;
+            static bool s_logged_stencil_disabled = false;
+            if (!s_logged_stencil_disabled)
+            {
+                debug_log("[rive] NVN MSAA stencil disabled");
+                s_logged_stencil_disabled = true;
+            }
+        }
+#endif
         if (desc.interlockMode == gpu::InterlockMode::atomics &&
             !desc.fixedFunctionColorOutput && !pipeline_state.colorWriteEnabled)
         {
@@ -4737,10 +6276,15 @@ void RenderContextNVNImpl::execute_draw_list(
                               BarrierFlags::plsAtomicPreResolve |
                               BarrierFlags::dstBlend))
         {
-            command_buffer->Barrier(
-                nvn_api::BarrierBits::ORDER_FRAGMENTS |
-                nvn_api::BarrierBits::INVALIDATE_TEXTURE);
+            command_buffer->Barrier(pls_storage_barrier_bits());
         }
+#if RIVE_NVN_FORCE_PLS_BARRIER_EVERY_DRAW
+        if (desc.interlockMode == gpu::InterlockMode::atomics)
+        {
+            // Force a storage barrier every draw in atomics to debug ordering issues.
+            command_buffer->Barrier(pls_storage_barrier_bits());
+        }
+#endif
 
         if (auto image_texture =
                 static_cast<const TextureNVN*>(batch.imageTexture))
@@ -4748,6 +6292,11 @@ void RenderContextNVNImpl::execute_draw_list(
             if (image_texture->uploaded() ||
                 const_cast<TextureNVN*>(image_texture)->ensureUploaded(*this))
             {
+                debug_log("[rive dbg] execute_draw_list bind image: drawType=%d target=%d handle=0x%llx",
+                          static_cast<int>(batch.drawType),
+                          static_cast<int>(image_texture->m_resource.target),
+                          static_cast<unsigned long long>(
+                              image_texture->m_resource.handle));
                 int sampler_id = ensure_sampler(batch.imageSampler,
                                                 reinterpret_cast<nvn_api::Device*>(
                                                     m_device));
@@ -4924,6 +6473,18 @@ void RenderContextNVNImpl::execute_draw_list(
                                            4);
                 break;
             }
+        }
+    }
+
+    if (desc.interlockMode == gpu::InterlockMode::msaa &&
+        saw_msaa_draw && !saw_msaa_color)
+    {
+        static bool s_logged_no_msaa_color = false;
+        if (!s_logged_no_msaa_color)
+        {
+            debug_log(
+                "[rive] msaa draw list has no color-writing passes (stencil-only)");
+            s_logged_no_msaa_color = true;
         }
     }
 }

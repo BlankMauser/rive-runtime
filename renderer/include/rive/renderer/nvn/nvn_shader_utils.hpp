@@ -38,6 +38,7 @@ struct ShaderBuildParams
     ShaderFeatures shaderFeatures = ShaderFeatures::NONE;
     ShaderMiscFlags miscFlags = ShaderMiscFlags::none;
     AtlasTextureType atlasTextureType = AtlasTextureType::r32f;
+    InterlockMode interlockMode = InterlockMode::atomics;
     ShaderBuildCaps caps = {};
 };
 

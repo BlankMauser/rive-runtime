@@ -414,6 +414,8 @@
 #endif
 
 #define PLS_BLOCK_BEGIN
+#ifdef RIVE_NVN_PLS_FORCE_2D
+#define PLS_IMAGE_COORD ivec2(_plsCoord)
 #ifdef @TARGET_VULKAN
 #define PLS_DECL4F(IDX, NAME)                                                  \
     layout(set = PLS_TEXTURE_BINDINGS_SET, binding = IDX, rgba8)               \
@@ -427,12 +429,28 @@
 #define PLS_DECLUI(IDX, NAME)                                                  \
     layout(binding = IDX, r32ui) uniform highp coherent uimage2D NAME
 #endif
+#else
+#define PLS_IMAGE_COORD ivec3(_plsCoord, 0)
+#ifdef @TARGET_VULKAN
+#define PLS_DECL4F(IDX, NAME)                                                  \
+    layout(set = PLS_TEXTURE_BINDINGS_SET, binding = IDX, rgba8)               \
+        uniform lowp coherent image2DArray NAME
+#define PLS_DECLUI(IDX, NAME)                                                  \
+    layout(set = PLS_TEXTURE_BINDINGS_SET, binding = IDX, r32ui)               \
+        uniform highp coherent uimage2DArray NAME
+#else
+#define PLS_DECL4F(IDX, NAME)                                                  \
+    layout(binding = IDX, rgba8) uniform lowp coherent image2DArray NAME
+#define PLS_DECLUI(IDX, NAME)                                                  \
+    layout(binding = IDX, r32ui) uniform highp coherent uimage2DArray NAME
+#endif
+#endif
 #define PLS_BLOCK_END
 
-#define PLS_LOAD4F(PLANE) imageLoad(PLANE, _plsCoord)
-#define PLS_LOADUI(PLANE) imageLoad(PLANE, _plsCoord).r
-#define PLS_STORE4F(PLANE, VALUE) imageStore(PLANE, _plsCoord, VALUE)
-#define PLS_STOREUI(PLANE, VALUE) imageStore(PLANE, _plsCoord, uvec4(VALUE))
+#define PLS_LOAD4F(PLANE) imageLoad(PLANE, PLS_IMAGE_COORD)
+#define PLS_LOADUI(PLANE) imageLoad(PLANE, PLS_IMAGE_COORD).r
+#define PLS_STORE4F(PLANE, VALUE) imageStore(PLANE, PLS_IMAGE_COORD, VALUE)
+#define PLS_STOREUI(PLANE, VALUE) imageStore(PLANE, PLS_IMAGE_COORD, uvec4(VALUE))
 
 #define PLS_PRESERVE_4F(PLANE)
 #define PLS_PRESERVE_UI(PLANE)
@@ -563,6 +581,7 @@
 
 #ifdef @USING_PLS_STORAGE_TEXTURES
 
+#ifdef RIVE_NVN_PLS_FORCE_2D
 #ifdef @TARGET_VULKAN
 #define PLS_DECLUI_ATOMIC(IDX, NAME)                                           \
     layout(set = PLS_TEXTURE_BINDINGS_SET, binding = IDX, r32ui)               \
@@ -571,11 +590,21 @@
 #define PLS_DECLUI_ATOMIC(IDX, NAME)                                           \
     layout(binding = IDX, r32ui) uniform highp coherent uimage2D NAME
 #endif
-#define PLS_LOADUI_ATOMIC(PLANE) imageLoad(PLANE, _plsCoord).r
+#else
+#ifdef @TARGET_VULKAN
+#define PLS_DECLUI_ATOMIC(IDX, NAME)                                           \
+    layout(set = PLS_TEXTURE_BINDINGS_SET, binding = IDX, r32ui)               \
+        uniform highp coherent uimage2DArray NAME
+#else
+#define PLS_DECLUI_ATOMIC(IDX, NAME)                                           \
+    layout(binding = IDX, r32ui) uniform highp coherent uimage2DArray NAME
+#endif
+#endif
+#define PLS_LOADUI_ATOMIC(PLANE) imageLoad(PLANE, PLS_IMAGE_COORD).r
 #define PLS_STOREUI_ATOMIC(PLANE, VALUE)                                       \
-    imageStore(PLANE, _plsCoord, uvec4(VALUE))
-#define PLS_ATOMIC_MAX(PLANE, X) imageAtomicMax(PLANE, _plsCoord, X)
-#define PLS_ATOMIC_ADD(PLANE, X) imageAtomicAdd(PLANE, _plsCoord, X)
+    imageStore(PLANE, PLS_IMAGE_COORD, uvec4(VALUE))
+#define PLS_ATOMIC_MAX(PLANE, X) imageAtomicMax(PLANE, PLS_IMAGE_COORD, X)
+#define PLS_ATOMIC_ADD(PLANE, X) imageAtomicAdd(PLANE, PLS_IMAGE_COORD, X)
 
 #define PLS_CONTEXT_DECL , int2 _plsCoord
 #define PLS_CONTEXT_UNPACK , _plsCoord
