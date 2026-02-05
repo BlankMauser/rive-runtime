@@ -34,7 +34,7 @@
 
 // Debug: disable stencil tests in MSAA path to isolate black output.
 #ifndef RIVE_NVN_MSAA_DISABLE_STENCIL
-#define RIVE_NVN_MSAA_DISABLE_STENCIL 1
+#define RIVE_NVN_MSAA_DISABLE_STENCIL 0
 #endif
 
 // Use RGBA8 clip plane to avoid integer storage-image issues on some backends.
@@ -2835,7 +2835,7 @@ static void apply_pipeline_state(nvn_api::CommandBuffer* command_buffer,
     }
 
     polygon_state.SetCullFace(to_nvn_cull_face(state.cullFace));
-    polygon_state.SetFrontFace(nvn_api::FrontFace::CCW);
+    polygon_state.SetFrontFace(nvn_api::FrontFace::CW);
 
     if (state.blendEquation == rive::gpu::BlendEquation::none)
     {
