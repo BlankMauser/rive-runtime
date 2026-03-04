@@ -20,6 +20,10 @@
 #define RIVE_NVN_ENABLE_LOGS 0
 #endif
 
+#ifndef RIVE_NVN_ENABLE_RENDERER_LOGS
+#define RIVE_NVN_ENABLE_RENDERER_LOGS 0
+#endif
+
 #ifndef RIVE_NVN_ENABLE_BIND_LOGS
 #define RIVE_NVN_ENABLE_BIND_LOGS 0
 #endif
@@ -30,6 +34,27 @@
 
 #ifndef RIVE_NVN_DISABLE_PLS
 #define RIVE_NVN_DISABLE_PLS 1
+#endif
+
+#ifndef RIVE_NVN_ENABLE_SHADER_PREWARM
+#define RIVE_NVN_ENABLE_SHADER_PREWARM 1
+#endif
+
+#ifndef RIVE_NVN_GLSLC_USE_DEFAULT_ALLOC
+#define RIVE_NVN_GLSLC_USE_DEFAULT_ALLOC 1
+#endif
+
+#ifndef RIVE_NVN_GLSLC_DEBUG_LEVEL
+#define RIVE_NVN_GLSLC_DEBUG_LEVEL GLSLC_DEBUG_LEVEL_NONE
+#endif
+
+#ifndef RIVE_NVN_DISABLE_RESOURCE_TRIM
+#define RIVE_NVN_DISABLE_RESOURCE_TRIM 1
+#endif
+
+// Apply gamma correction in MSAA shaders when rendering to sRGB targets.
+#ifndef RIVE_NVN_NEEDS_GAMMA_CORRECTION
+#define RIVE_NVN_NEEDS_GAMMA_CORRECTION 1
 #endif
 
 // Debug: disable stencil tests in MSAA path to isolate black output.
@@ -46,8 +71,22 @@
 #define RIVE_NVN_PLS_FIXED_LAYOUT 1
 #endif
 
-#if !RIVE_NVN_ENABLE_LOGS
+#ifndef RIVE_NVN_BUFFER_RING_SIZE
+#define RIVE_NVN_BUFFER_RING_SIZE 16
+#endif
+
+#if !RIVE_NVN_ENABLE_LOGS || !RIVE_NVN_ENABLE_RENDERER_LOGS
 #define debug_log(...) ((void)0)
+#endif
+
+#ifndef RIVE_NVN_ENABLE_PER_FRAME_LOGS
+#define RIVE_NVN_ENABLE_PER_FRAME_LOGS 0
+#endif
+
+#if RIVE_NVN_ENABLE_PER_FRAME_LOGS
+#define frame_log(...) debug_log(__VA_ARGS__)
+#else
+#define frame_log(...) ((void)0)
 #endif
 
 static bool env_flag_enabled(const char* name)
@@ -443,6 +482,10 @@ void glslc_free_cb(void* ptr, void* user)
 GlslAllocatorState make_glslc_allocator(const RiveNVNAllocator* allocator)
 {
     GlslAllocatorState state;
+#if RIVE_NVN_GLSLC_USE_DEFAULT_ALLOC
+    state.use_default = true;
+    return state;
+#endif
     if (allocator && allocator->alloc && allocator->realloc && allocator->free)
     {
         state.allocator = *allocator;
@@ -2117,7 +2160,7 @@ private:
         compile_object.options.optionFlags.outputShaderReflection = 1;
         compile_object.options.optionFlags.outputAssembly = 0;
         compile_object.options.optionFlags.outputPerfStats = 0;
-        compile_object.options.optionFlags.outputDebugInfo = GLSLC_DEBUG_LEVEL_G2;
+        compile_object.options.optionFlags.outputDebugInfo = RIVE_NVN_GLSLC_DEBUG_LEVEL;
         compile_object.options.optionFlags.language = GLSLC_LANGUAGE_GLSL;
         // Respect explicit layout(binding=...) indices so our NVN binding calls match.
         compile_object.options.optionFlags.ignoreBindings = 0;
@@ -2591,6 +2634,15 @@ static bool build_msaa_program_sources(
     append_shader_misc_defines(base_defines, params.miscFlags);
     append_shader_feature_defines(base_defines, params.shaderFeatures);
     base_defines.push_back(GLSL_RENDER_MODE_MSAA);
+#if RIVE_NVN_NEEDS_GAMMA_CORRECTION
+    base_defines.push_back(GLSL_NEEDS_GAMMA_CORRECTION);
+    static bool s_logged_gamma = false;
+    if (!s_logged_gamma)
+    {
+        debug_log("[rive] NVN MSAA gamma correction enabled");
+        s_logged_gamma = true;
+    }
+#endif
     if (!params.caps.supportsShaderStorageBuffers)
     {
         base_defines.push_back(GLSL_DISABLE_SHADER_STORAGE_BUFFERS);
@@ -2994,6 +3046,8 @@ class RenderContextNVNImpl : public RenderContextImpl
     friend class TextureNVN;
 
 public:
+    static constexpr size_t kBufferRingSize = RIVE_NVN_BUFFER_RING_SIZE;
+
     RenderContextNVNImpl(void* device,
                          void* queue,
                          uint32_t maxTextureSize,
@@ -3004,6 +3058,20 @@ public:
     {
         m_allocator = make_allocator(allocator);
         m_glslcAllocator = make_glslc_allocator(allocator);
+        {
+            static bool s_logged_glslc_alloc = false;
+            if (!s_logged_glslc_alloc)
+            {
+                debug_log("[rive] glslc allocator=%s debug_level=%d",
+#if RIVE_NVN_GLSLC_USE_DEFAULT_ALLOC
+                          "system",
+#else
+                          "rive",
+#endif
+                          static_cast<int>(RIVE_NVN_GLSLC_DEBUG_LEVEL));
+                s_logged_glslc_alloc = true;
+            }
+        }
         resolve_glslc_api(&m_glslcApi);
         m_flushUniformBuffer.setAllocator(m_allocator);
         m_imageDrawUniformBuffer.setAllocator(m_allocator);
@@ -3015,6 +3083,51 @@ public:
         m_tessVertexSpanBuffer.setAllocator(m_allocator);
         m_triangleVertexBuffer.setAllocator(m_allocator);
         m_coverageBuffer.setAllocator(m_allocator);
+        for (auto& buffer : m_flushUniformGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_imageDrawUniformGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_pathGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_paintGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_paintAuxGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_contourGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_gradSpanGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_tessSpanGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_triangleGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        for (auto& buffer : m_coverageGpu)
+        {
+            buffer.setAllocator(m_allocator);
+        }
+        m_patchVertexGpu.setAllocator(m_allocator);
+        m_patchIndexGpu.setAllocator(m_allocator);
+        m_tessSpanIndexGpu.setAllocator(m_allocator);
+        m_imageRectVertexGpu.setAllocator(m_allocator);
+        m_imageRectIndexGpu.setAllocator(m_allocator);
 
         // Disable PLS on NVN; force MSAA path instead.
 #if RIVE_NVN_DISABLE_PLS
@@ -3199,6 +3312,22 @@ public:
         m_coverageBuffer.resize(sizeInBytes);
     }
 
+    void prepareToFlush(uint64_t nextFrameNumber,
+                        uint64_t safeFrameNumber) override
+    {
+        m_currentFrameNumber = nextFrameNumber;
+        m_safeFrameNumber = safeFrameNumber;
+        if constexpr (kBufferRingSize > 1)
+        {
+            m_bufferRingIndex =
+                static_cast<int>(nextFrameNumber % kBufferRingSize);
+        }
+        else
+        {
+            m_bufferRingIndex = 0;
+        }
+    }
+
     void flush(const gpu::FlushDescriptor& desc) override
     {
         if (!m_device || !m_queue)
@@ -3323,7 +3452,7 @@ public:
             return;
         }
         const int sampler_id = ensure_default_sampler(device);
-        debug_log("[rive] flush step: sampler id=%d", sampler_id);
+        frame_log("[rive] flush step: sampler id=%d", sampler_id);
         if (sampler_id < 0)
         {
             static bool s_logged_flush_sampler_fail = false;
@@ -3339,7 +3468,7 @@ public:
             static bool s_logged_default_sampler = false;
             if (!s_logged_default_sampler)
             {
-                debug_log("[rive] default sampler ok");
+                frame_log("[rive] default sampler ok");
                 s_logged_default_sampler = true;
             }
         }
@@ -3347,7 +3476,7 @@ public:
             static int s_flush_step_seq = 0;
             if (s_flush_step_seq < 5)
             {
-                debug_log("[rive] flush step seq=%d pre-geometry",
+                frame_log("[rive] flush step seq=%d pre-geometry",
                           s_flush_step_seq);
             }
             ++s_flush_step_seq;
@@ -3366,7 +3495,7 @@ public:
             static int s_flush_step_geometry_ok = 0;
             if (s_flush_step_geometry_ok < 5)
             {
-                debug_log("[rive] flush step seq=%d geometry ok",
+                frame_log("[rive] flush step seq=%d geometry ok",
                           s_flush_step_geometry_ok);
             }
             ++s_flush_step_geometry_ok;
@@ -3375,7 +3504,7 @@ public:
             static bool s_logged_vertex_enter = false;
             if (!s_logged_vertex_enter)
             {
-                debug_log("[rive] flush step: vertex states enter");
+                frame_log("[rive] flush step: vertex states enter");
                 s_logged_vertex_enter = true;
             }
         }
@@ -3389,7 +3518,7 @@ public:
             static bool s_logged_vertex_skip = false;
             if (!s_logged_vertex_skip)
             {
-                debug_log("[rive] flush step: vertex states skipped");
+                frame_log("[rive] flush step: vertex states skipped");
                 s_logged_vertex_skip = true;
             }
         }
@@ -3399,12 +3528,12 @@ public:
             static bool s_logged_vertex_ok = false;
             if (!s_logged_vertex_ok)
             {
-                debug_log("[rive] flush step: vertex states ok");
+                frame_log("[rive] flush step: vertex states ok");
                 s_logged_vertex_ok = true;
             }
         }
 
-        debug_log("[rive] flush step: buffers enter");
+        frame_log("[rive] flush step: buffers enter");
         if (!upload_resource_buffers(desc, device))
         {
             static bool s_logged_flush_buffers_fail = false;
@@ -3419,7 +3548,7 @@ public:
             static bool s_logged_buffers_ok = false;
             if (!s_logged_buffers_ok)
             {
-                debug_log("[rive] flush step: buffers ok");
+                frame_log("[rive] flush step: buffers ok");
                 s_logged_buffers_ok = true;
             }
         }
@@ -3437,7 +3566,7 @@ public:
             static bool s_logged_textures_ok = false;
             if (!s_logged_textures_ok)
             {
-                debug_log("[rive] flush step: textures ok");
+                frame_log("[rive] flush step: textures ok");
                 s_logged_textures_ok = true;
             }
         }
@@ -3701,13 +3830,32 @@ public:
 
     double secondsNow() const override
     {
+#if RIVE_NVN_DISABLE_RESOURCE_TRIM
+        return 0.0;
+#else
         using clock = std::chrono::steady_clock;
         return std::chrono::duration<double>(
                    clock::now().time_since_epoch())
             .count();
+#endif
     }
 
 private:
+    template <size_t N>
+    NVNGpuBuffer& frame_buffer(std::array<NVNGpuBuffer, N>& ring)
+    {
+        static_assert(N >= 1, "Buffer ring size must be >= 1");
+        return ring[m_bufferRingIndex];
+    }
+
+    template <size_t N>
+    const NVNGpuBuffer& frame_buffer(
+        const std::array<NVNGpuBuffer, N>& ring) const
+    {
+        static_assert(N >= 1, "Buffer ring size must be >= 1");
+        return ring[m_bufferRingIndex];
+    }
+
     bool ensure_descriptor_pools(nvn_api::Device* device);
     int ensure_default_sampler(nvn_api::Device* device);
     int ensure_sampler(const ImageSampler& sampler, nvn_api::Device* device);
@@ -3928,6 +4076,15 @@ private:
         {
             return;
         }
+#if !RIVE_NVN_ENABLE_SHADER_PREWARM
+        if (!m_logged_prewarm_unavailable)
+        {
+            debug_log("[rive] prewarm skipped: disabled");
+            m_logged_prewarm_unavailable = true;
+        }
+        m_shader_prewarmed = true;
+        return;
+#endif
         if (!m_glslcApi.ready())
         {
             resolve_glslc_api(&m_glslcApi);
@@ -4126,16 +4283,16 @@ private:
     NVNBuffer m_tessVertexSpanBuffer;
     NVNBuffer m_triangleVertexBuffer;
     NVNBuffer m_coverageBuffer;
-    NVNGpuBuffer m_flushUniformGpu;
-    NVNGpuBuffer m_imageDrawUniformGpu;
-    NVNGpuBuffer m_pathGpu;
-    NVNGpuBuffer m_paintGpu;
-    NVNGpuBuffer m_paintAuxGpu;
-    NVNGpuBuffer m_contourGpu;
-    NVNGpuBuffer m_gradSpanGpu;
-    NVNGpuBuffer m_tessSpanGpu;
-    NVNGpuBuffer m_triangleGpu;
-    NVNGpuBuffer m_coverageGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_flushUniformGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_imageDrawUniformGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_pathGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_paintGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_paintAuxGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_contourGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_gradSpanGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_tessSpanGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_triangleGpu;
+    std::array<NVNGpuBuffer, kBufferRingSize> m_coverageGpu;
 
     NVNGpuBuffer m_patchVertexGpu;
     NVNGpuBuffer m_patchIndexGpu;
@@ -4217,6 +4374,9 @@ private:
     uint32_t m_plsTransientBackingPlaneCount = 0;
     uint32_t m_atomicCoverageWidth = 0;
     uint32_t m_atomicCoverageHeight = 0;
+    uint64_t m_currentFrameNumber = 0;
+    uint64_t m_safeFrameNumber = 0;
+    int m_bufferRingIndex = 0;
 
     AtlasTextureType m_atlasTextureType = AtlasTextureType::rgba8;
     std::unordered_map<PipelineKey, std::unique_ptr<NvnShaderProgram>, PipelineKeyHasher>
@@ -4829,6 +4989,17 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         nvn_api::MemoryPoolFlags::CPU_UNCACHED |
         nvn_api::MemoryPoolFlags::GPU_CACHED;
 
+    auto& flush_gpu = frame_buffer(m_flushUniformGpu);
+    auto& image_draw_gpu = frame_buffer(m_imageDrawUniformGpu);
+    auto& path_gpu = frame_buffer(m_pathGpu);
+    auto& paint_gpu = frame_buffer(m_paintGpu);
+    auto& paint_aux_gpu = frame_buffer(m_paintAuxGpu);
+    auto& contour_gpu = frame_buffer(m_contourGpu);
+    auto& grad_span_gpu = frame_buffer(m_gradSpanGpu);
+    auto& tess_span_gpu = frame_buffer(m_tessSpanGpu);
+    auto& triangle_gpu = frame_buffer(m_triangleGpu);
+    auto& coverage_gpu = frame_buffer(m_coverageGpu);
+
     if (m_flushUniformBuffer.size() > 0)
     {
         static bool s_logged_flush = false;
@@ -4836,13 +5007,13 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers flush size=%zu gpu=%p",
                       m_flushUniformBuffer.size(),
-                      &m_flushUniformGpu);
+                      &flush_gpu);
             s_logged_flush = true;
         }
-        if (!m_flushUniformGpu.upload(device,
-                                      m_flushUniformBuffer.data(),
-                                      m_flushUniformBuffer.size(),
-                                      kBufferFlags))
+        if (!flush_gpu.upload(device,
+                              m_flushUniformBuffer.data(),
+                              m_flushUniformBuffer.size(),
+                              kBufferFlags))
         {
             return false;
         }
@@ -4854,13 +5025,13 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers image_draw size=%zu gpu=%p",
                       m_imageDrawUniformBuffer.size(),
-                      &m_imageDrawUniformGpu);
+                      &image_draw_gpu);
             s_logged_image_draw = true;
         }
-        if (!m_imageDrawUniformGpu.upload(device,
-                                          m_imageDrawUniformBuffer.data(),
-                                          m_imageDrawUniformBuffer.size(),
-                                          kBufferFlags))
+        if (!image_draw_gpu.upload(device,
+                                   m_imageDrawUniformBuffer.data(),
+                                   m_imageDrawUniformBuffer.size(),
+                                   kBufferFlags))
         {
             return false;
         }
@@ -4872,13 +5043,13 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers path size=%zu gpu=%p",
                       m_pathBuffer.size(),
-                      &m_pathGpu);
+                      &path_gpu);
             s_logged_path = true;
         }
-        if (!m_pathGpu.upload(device,
-                              m_pathBuffer.data(),
-                              m_pathBuffer.size(),
-                              kBufferFlags))
+        if (!path_gpu.upload(device,
+                             m_pathBuffer.data(),
+                             m_pathBuffer.size(),
+                             kBufferFlags))
         {
             return false;
         }
@@ -4890,13 +5061,13 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers paint size=%zu gpu=%p",
                       m_paintBuffer.size(),
-                      &m_paintGpu);
+                      &paint_gpu);
             s_logged_paint = true;
         }
-        if (!m_paintGpu.upload(device,
-                               m_paintBuffer.data(),
-                               m_paintBuffer.size(),
-                               kBufferFlags))
+        if (!paint_gpu.upload(device,
+                              m_paintBuffer.data(),
+                              m_paintBuffer.size(),
+                              kBufferFlags))
         {
             return false;
         }
@@ -4908,10 +5079,10 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers paint_aux size=%zu gpu=%p",
                       m_paintAuxBuffer.size(),
-                      &m_paintAuxGpu);
+                      &paint_aux_gpu);
             s_logged_paint_aux = true;
         }
-        if (!m_paintAuxGpu.upload(device,
+        if (!paint_aux_gpu.upload(device,
                                   m_paintAuxBuffer.data(),
                                   m_paintAuxBuffer.size(),
                                   kBufferFlags))
@@ -4926,13 +5097,13 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers contour size=%zu gpu=%p",
                       m_contourBuffer.size(),
-                      &m_contourGpu);
+                      &contour_gpu);
             s_logged_contour = true;
         }
-        if (!m_contourGpu.upload(device,
-                                 m_contourBuffer.data(),
-                                 m_contourBuffer.size(),
-                                 kBufferFlags))
+        if (!contour_gpu.upload(device,
+                                m_contourBuffer.data(),
+                                m_contourBuffer.size(),
+                                kBufferFlags))
         {
             return false;
         }
@@ -4944,10 +5115,10 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers grad_span size=%zu gpu=%p",
                       m_gradSpanBuffer.size(),
-                      &m_gradSpanGpu);
+                      &grad_span_gpu);
             s_logged_grad = true;
         }
-        if (!m_gradSpanGpu.upload(device,
+        if (!grad_span_gpu.upload(device,
                                   m_gradSpanBuffer.data(),
                                   m_gradSpanBuffer.size(),
                                   kBufferFlags))
@@ -4962,10 +5133,10 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers tess_span size=%zu gpu=%p",
                       m_tessVertexSpanBuffer.size(),
-                      &m_tessSpanGpu);
+                      &tess_span_gpu);
             s_logged_tess_span = true;
         }
-        if (!m_tessSpanGpu.upload(device,
+        if (!tess_span_gpu.upload(device,
                                   m_tessVertexSpanBuffer.data(),
                                   m_tessVertexSpanBuffer.size(),
                                   kBufferFlags))
@@ -4980,13 +5151,13 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers triangle size=%zu gpu=%p",
                       m_triangleVertexBuffer.size(),
-                      &m_triangleGpu);
+                      &triangle_gpu);
             s_logged_triangle = true;
         }
-        if (!m_triangleGpu.upload(device,
-                                  m_triangleVertexBuffer.data(),
-                                  m_triangleVertexBuffer.size(),
-                                  kBufferFlags))
+        if (!triangle_gpu.upload(device,
+                                 m_triangleVertexBuffer.data(),
+                                 m_triangleVertexBuffer.size(),
+                                 kBufferFlags))
         {
             return false;
         }
@@ -4998,13 +5169,13 @@ bool RenderContextNVNImpl::upload_resource_buffers(
         {
             debug_log("[rive] upload_resource_buffers coverage size=%zu gpu=%p",
                       m_coverageBuffer.size(),
-                      &m_coverageGpu);
+                      &coverage_gpu);
             s_logged_coverage = true;
         }
-        if (!m_coverageGpu.upload(device,
-                                  m_coverageBuffer.data(),
-                                  m_coverageBuffer.size(),
-                                  kBufferFlags))
+        if (!coverage_gpu.upload(device,
+                                 m_coverageBuffer.data(),
+                                 m_coverageBuffer.size(),
+                                 kBufferFlags))
         {
             return false;
         }
@@ -5022,10 +5193,17 @@ void RenderContextNVNImpl::bind_common_buffers(
         return;
     }
 
-    if (m_flushUniformGpu.size() >= sizeof(gpu::FlushUniforms))
+    auto& flush_gpu = frame_buffer(m_flushUniformGpu);
+    auto& path_gpu = frame_buffer(m_pathGpu);
+    auto& paint_gpu = frame_buffer(m_paintGpu);
+    auto& paint_aux_gpu = frame_buffer(m_paintAuxGpu);
+    auto& contour_gpu = frame_buffer(m_contourGpu);
+    auto& coverage_gpu = frame_buffer(m_coverageGpu);
+
+    if (flush_gpu.size() >= sizeof(gpu::FlushUniforms))
     {
         nvn_api::BufferAddress address =
-            m_flushUniformGpu.address(desc.flushUniformDataOffsetInBytes);
+            flush_gpu.address(desc.flushUniformDataOffsetInBytes);
         command_buffer->BindUniformBuffer(nvn_api::ShaderStage::VERTEX,
                                           FLUSH_UNIFORM_BUFFER_IDX,
                                           address,
@@ -5053,19 +5231,19 @@ void RenderContextNVNImpl::bind_common_buffers(
     {
         size_t size = desc.pathCount * sizeof(gpu::PathData);
         bind_storage(PATH_BUFFER_IDX,
-                     m_pathGpu.address(desc.firstPath *
-                                       sizeof(gpu::PathData)),
+                     path_gpu.address(desc.firstPath *
+                                      sizeof(gpu::PathData)),
                      size);
 
         size = desc.pathCount * sizeof(gpu::PaintData);
         bind_storage(PAINT_BUFFER_IDX,
-                     m_paintGpu.address(desc.firstPaint *
-                                        sizeof(gpu::PaintData)),
+                     paint_gpu.address(desc.firstPaint *
+                                       sizeof(gpu::PaintData)),
                      size);
 
         size = desc.pathCount * sizeof(gpu::PaintAuxData);
         bind_storage(PAINT_AUX_BUFFER_IDX,
-                     m_paintAuxGpu.address(desc.firstPaintAux *
+                     paint_aux_gpu.address(desc.firstPaintAux *
                                            sizeof(gpu::PaintAuxData)),
                      size);
     }
@@ -5074,16 +5252,16 @@ void RenderContextNVNImpl::bind_common_buffers(
     {
         size_t size = desc.contourCount * sizeof(gpu::ContourData);
         bind_storage(CONTOUR_BUFFER_IDX,
-                     m_contourGpu.address(desc.firstContour *
-                                          sizeof(gpu::ContourData)),
+                     contour_gpu.address(desc.firstContour *
+                                         sizeof(gpu::ContourData)),
                      size);
     }
 
-    if (m_coverageGpu.size() > 0)
+    if (coverage_gpu.size() > 0)
     {
         bind_storage(COVERAGE_BUFFER_IDX,
-                     m_coverageGpu.address(),
-                     m_coverageGpu.size());
+                     coverage_gpu.address(),
+                     coverage_gpu.size());
     }
 }
 
@@ -5249,7 +5427,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
     static bool s_logged_enter = false;
     if (!s_logged_enter)
     {
-        debug_log("[rive] ensure_resource_textures enter");
+        frame_log("[rive] ensure_resource_textures enter");
         s_logged_enter = true;
     }
     {
@@ -5299,7 +5477,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_pools_ok = false;
         if (!s_logged_pools_ok)
         {
-            debug_log("[rive] ensure_resource_textures step: pools ok");
+            frame_log("[rive] ensure_resource_textures step: pools ok");
             s_logged_pools_ok = true;
         }
     }
@@ -5308,7 +5486,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_sampler_enter = false;
         if (!s_logged_sampler_enter)
         {
-            debug_log("[rive] ensure_resource_textures step: sampler enter");
+            frame_log("[rive] ensure_resource_textures step: sampler enter");
             s_logged_sampler_enter = true;
         }
     }
@@ -5317,7 +5495,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_sampler_id = false;
         if (!s_logged_sampler_id)
         {
-            debug_log("[rive] ensure_resource_textures step: sampler id=%d",
+            frame_log("[rive] ensure_resource_textures step: sampler id=%d",
                       sampler_id);
             s_logged_sampler_id = true;
         }
@@ -5335,7 +5513,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_sampler_ok = false;
         if (!s_logged_sampler_ok)
         {
-            debug_log("[rive] ensure_resource_textures step: sampler ok");
+            frame_log("[rive] ensure_resource_textures step: sampler ok");
             s_logged_sampler_ok = true;
         }
     }
@@ -5352,7 +5530,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_gradient_try = false;
         if (!s_logged_gradient_try)
         {
-            debug_log("[rive] ensure_resource_textures step: gradient %ux%u",
+            frame_log("[rive] ensure_resource_textures step: gradient %ux%u",
                       static_cast<unsigned int>(m_gradientTextureWidth),
                       static_cast<unsigned int>(m_gradientTextureHeight));
             s_logged_gradient_try = true;
@@ -5385,7 +5563,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_gradient_ok = false;
         if (!s_logged_gradient_ok)
         {
-            debug_log("[rive] ensure_resource_textures step: gradient ok");
+            frame_log("[rive] ensure_resource_textures step: gradient ok");
             s_logged_gradient_ok = true;
         }
     }
@@ -5395,7 +5573,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_tess_try = false;
         if (!s_logged_tess_try)
         {
-            debug_log("[rive] ensure_resource_textures step: tess %ux%u",
+            frame_log("[rive] ensure_resource_textures step: tess %ux%u",
                       static_cast<unsigned int>(m_tessellationTextureWidth),
                       static_cast<unsigned int>(m_tessellationTextureHeight));
             s_logged_tess_try = true;
@@ -5434,7 +5612,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_tess_ok = false;
         if (!s_logged_tess_ok)
         {
-            debug_log("[rive] ensure_resource_textures step: tess ok");
+            frame_log("[rive] ensure_resource_textures step: tess ok");
             s_logged_tess_ok = true;
         }
     }
@@ -5444,7 +5622,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_atlas_try = false;
         if (!s_logged_atlas_try)
         {
-            debug_log("[rive] ensure_resource_textures step: atlas %ux%u",
+            frame_log("[rive] ensure_resource_textures step: atlas %ux%u",
                       static_cast<unsigned int>(m_atlasTextureWidth),
                       static_cast<unsigned int>(m_atlasTextureHeight));
             s_logged_atlas_try = true;
@@ -5476,7 +5654,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_atlas_ok = false;
         if (!s_logged_atlas_ok)
         {
-            debug_log("[rive] ensure_resource_textures step: atlas ok");
+            frame_log("[rive] ensure_resource_textures step: atlas ok");
             s_logged_atlas_ok = true;
         }
     }
@@ -5485,7 +5663,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_feather_try = false;
         if (!s_logged_feather_try)
         {
-            debug_log("[rive] ensure_resource_textures step: feather");
+            frame_log("[rive] ensure_resource_textures step: feather");
             s_logged_feather_try = true;
         }
         const int feather_width = gpu::GAUSSIAN_TABLE_SIZE;
@@ -5522,7 +5700,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
             static bool s_logged_feather_upload = false;
             if (!s_logged_feather_upload)
             {
-                debug_log("[rive] ensure_resource_textures step: feather upload");
+                frame_log("[rive] ensure_resource_textures step: feather upload");
                 s_logged_feather_upload = true;
             }
             nvn_api::CopyRegion region = {};
@@ -5547,7 +5725,7 @@ bool RenderContextNVNImpl::ensure_resource_textures(
         static bool s_logged_feather_ok = false;
         if (!s_logged_feather_ok)
         {
-            debug_log("[rive] ensure_resource_textures step: feather ok");
+            frame_log("[rive] ensure_resource_textures step: feather ok");
             s_logged_feather_ok = true;
         }
     }
@@ -5878,11 +6056,12 @@ void RenderContextNVNImpl::render_color_ramp(
     apply_pipeline_state(command_buffer, gpu::COLOR_ONLY_PIPELINE_STATE, 1);
     bind_common_buffers(desc, command_buffer);
 
+    auto& grad_span_gpu = frame_buffer(m_gradSpanGpu);
     command_buffer->BindVertexAttribState(1, m_gradAttribs);
     command_buffer->BindVertexStreamState(1, m_gradStreams);
     command_buffer->BindVertexBuffer(0,
-                                     m_gradSpanGpu.address(),
-                                     m_gradSpanGpu.size());
+                                     grad_span_gpu.address(),
+                                     grad_span_gpu.size());
 
     m_colorRampProgram.bind(command_buffer);
 
@@ -5970,11 +6149,12 @@ void RenderContextNVNImpl::render_tessellation(
                                     m_featherTexture.handle);
     }
 
+    auto& tess_span_gpu = frame_buffer(m_tessSpanGpu);
     command_buffer->BindVertexAttribState(4, m_tessAttribs);
     command_buffer->BindVertexStreamState(1, m_tessStreams);
     command_buffer->BindVertexBuffer(0,
-                                     m_tessSpanGpu.address(),
-                                     m_tessSpanGpu.size());
+                                     tess_span_gpu.address(),
+                                     tess_span_gpu.size());
 
     m_tessellateProgram.bind(command_buffer);
 
@@ -6209,6 +6389,9 @@ void RenderContextNVNImpl::execute_draw_list(
 
     bind_common_buffers(desc, command_buffer);
 
+    auto& triangle_gpu = frame_buffer(m_triangleGpu);
+    auto& image_draw_gpu = frame_buffer(m_imageDrawUniformGpu);
+
     const NvnShaderProgram* last_program = nullptr;
     bool saw_msaa_draw = false;
     bool saw_msaa_color = false;
@@ -6364,8 +6547,8 @@ void RenderContextNVNImpl::execute_draw_list(
                 command_buffer->BindVertexAttribState(1, m_triangleAttribs);
                 command_buffer->BindVertexStreamState(1, m_triangleStreams);
                 command_buffer->BindVertexBuffer(0,
-                                                 m_triangleGpu.address(),
-                                                 m_triangleGpu.size());
+                                                 triangle_gpu.address(),
+                                                 triangle_gpu.size());
                 command_buffer->DrawArrays(
                     nvn_api::DrawPrimitive::TRIANGLES,
                     static_cast<int>(batch.baseElement),
@@ -6375,11 +6558,11 @@ void RenderContextNVNImpl::execute_draw_list(
 
             case gpu::DrawType::imageRect:
             {
-                if (m_imageDrawUniformGpu.size() >=
+                if (image_draw_gpu.size() >=
                     sizeof(gpu::ImageDrawUniforms))
                 {
                     nvn_api::BufferAddress address =
-                        m_imageDrawUniformGpu.address(
+                        image_draw_gpu.address(
                             batch.imageDrawDataOffset);
                     command_buffer->BindUniformBuffer(
                         nvn_api::ShaderStage::VERTEX,
@@ -6428,11 +6611,11 @@ void RenderContextNVNImpl::execute_draw_list(
                     break;
                 }
 
-                if (m_imageDrawUniformGpu.size() >=
+                if (image_draw_gpu.size() >=
                     sizeof(gpu::ImageDrawUniforms))
                 {
                     nvn_api::BufferAddress address =
-                        m_imageDrawUniformGpu.address(
+                        image_draw_gpu.address(
                             batch.imageDrawDataOffset);
                     command_buffer->BindUniformBuffer(
                         nvn_api::ShaderStage::VERTEX,

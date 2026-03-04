@@ -54,6 +54,10 @@
 #define RIVE_NVN_DISABLE_PLS 1
 #endif
 
+#ifndef RIVE_NVN_ENABLE_PER_FRAME_LOGS
+#define RIVE_NVN_ENABLE_PER_FRAME_LOGS 0
+#endif
+
 // Hooking nvnWindowAcquireTexture can crash some emulators; keep it off by default.
 #ifndef RIVE_NVN_HOOK_WINDOW_ACQUIRE
 #define RIVE_NVN_HOOK_WINDOW_ACQUIRE 0
@@ -61,10 +65,44 @@
 
 #ifndef RIVE_NVN_FORCE_MSAA_SAMPLES
 #if RIVE_NVN_DISABLE_PLS
-#define RIVE_NVN_FORCE_MSAA_SAMPLES 4
+#define RIVE_NVN_FORCE_MSAA_SAMPLES 2
 #else
 #define RIVE_NVN_FORCE_MSAA_SAMPLES 0
 #endif
+#endif
+
+// UI scale factor applied on top of fit/alignment (debug aid).
+#ifndef RIVE_NVN_UI_SCALE
+#define RIVE_NVN_UI_SCALE 1.5f
+#endif
+
+#ifndef RIVE_NVN_ADVANCE_ARTBOARD
+#define RIVE_NVN_ADVANCE_ARTBOARD 1
+#endif
+
+// Frames to delay resource reclamation to avoid GPU use-after-free.
+#ifndef RIVE_NVN_SAFE_FRAME_LAG
+#define RIVE_NVN_SAFE_FRAME_LAG 16
+#endif
+
+#ifndef RIVE_NVN_USE_LOCAL_ALLOCATOR
+#define RIVE_NVN_USE_LOCAL_ALLOCATOR 1
+#endif
+
+#ifndef RIVE_NVN_LOCAL_ALLOCATOR_SIZE
+#define RIVE_NVN_LOCAL_ALLOCATOR_SIZE (128 * 1024 * 1024)
+#endif
+
+#ifndef RIVE_NVN_DEFER_FREES
+#define RIVE_NVN_DEFER_FREES 0
+#endif
+
+#ifndef RIVE_NVN_DEFER_FREES_UNTIL_DISABLED
+#define RIVE_NVN_DEFER_FREES_UNTIL_DISABLED 0
+#endif
+
+#ifndef RIVE_NVN_FORCE_GLOBAL_ALLOCATOR
+#define RIVE_NVN_FORCE_GLOBAL_ALLOCATOR 0
 #endif
 
 #ifndef RIVE_NVN_ADDR_FALLBACK
@@ -92,6 +130,12 @@
 #define debug_log(...) ((void)0)
 #endif
 
+#if RIVE_NVN_ENABLE_PER_FRAME_LOGS
+#define frame_log(...) debug_log(__VA_ARGS__)
+#else
+#define frame_log(...) ((void)0)
+#endif
+
 #include <atomic>
 #include <cctype>
 #include <cstdarg>
@@ -99,8 +143,13 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <new>
 #include <vector>
+
+#if defined(__SWITCH__)
+#include "mem.h"
+#endif
 
 extern "C" {
 nvn::GenericFuncPtr nvnBootstrapLoader(const char* symbol);
@@ -455,9 +504,12 @@ static std::vector<OverlayCommandMemoryBlock*> g_overlay_cmd_blocks;
 static std::vector<void*> g_overlay_ctrl_blocks;
 static std::atomic<bool> g_overlay_cmd_initializing{false};
 static BlitState g_blit;
+static std::atomic<uint64_t> g_frame_counter{0};
 static std::atomic<RiveArtboard*> g_artboard{nullptr};
 static std::atomic<const uint8_t*> g_pending_riv_data{nullptr};
 static std::atomic<size_t> g_pending_riv_len{0};
+static uint8_t* g_pending_riv_owned = nullptr;
+static size_t g_pending_riv_owned_len = 0;
 static RiveFile* g_pending_file = nullptr;
 static RiveArtboard* g_pending_artboard = nullptr;
 static std::atomic<bool> g_enabled{false};
@@ -1128,6 +1180,130 @@ struct GameAllocFns
 };
 
 static GameAllocFns g_game_alloc;
+static std::atomic<bool> g_use_game_alloc{false};
+
+#if RIVE_NVN_USE_LOCAL_ALLOCATOR
+struct LocalAllocatorState
+{
+    nn::mem::StandardAllocator allocator;
+    void* memory = nullptr;
+    size_t size = 0;
+    bool initialized = false;
+};
+
+static LocalAllocatorState g_local_alloc;
+
+static void ensure_local_allocator()
+{
+    if (g_local_alloc.initialized || g_local_alloc.memory) {
+        return;
+    }
+    const size_t size = static_cast<size_t>(RIVE_NVN_LOCAL_ALLOCATOR_SIZE);
+    void* memory = nullptr;
+#if defined(__SWITCH__)
+    memory = memalign(0x1000, size);
+#else
+    memory = aligned_alloc(0x1000, size);
+#endif
+    if (!memory) {
+        return;
+    }
+    g_local_alloc.allocator.Initialize(memory, size);
+    if (!g_local_alloc.allocator.mIsInitialized) {
+        std::free(memory);
+        return;
+    }
+    g_local_alloc.memory = memory;
+    g_local_alloc.size = size;
+    g_local_alloc.initialized = true;
+}
+
+static void* local_alloc(size_t size, size_t alignment, void*)
+{
+    ensure_local_allocator();
+    if (!g_local_alloc.initialized) {
+        return nullptr;
+    }
+    if (alignment == 0) {
+        alignment = 0x1000;
+    }
+    return g_local_alloc.allocator.Allocate(size, alignment);
+}
+
+static void* local_realloc(void* ptr, size_t new_size, void*)
+{
+    ensure_local_allocator();
+    if (!g_local_alloc.initialized) {
+        return nullptr;
+    }
+    return g_local_alloc.allocator.Reallocate(ptr, new_size);
+}
+
+static void local_free(void* ptr, void*)
+{
+    if (!ptr || !g_local_alloc.initialized) {
+        return;
+    }
+    g_local_alloc.allocator.Free(ptr);
+}
+#endif
+
+#if RIVE_NVN_DEFER_FREES
+struct DeferredFreeEntry
+{
+    void* ptr = nullptr;
+    uint64_t frame = 0;
+    bool use_game = false;
+};
+
+static std::vector<DeferredFreeEntry> g_deferred_frees;
+static std::atomic_flag g_deferred_frees_lock = ATOMIC_FLAG_INIT;
+
+static void lock_deferred_frees()
+{
+    while (g_deferred_frees_lock.test_and_set(std::memory_order_acquire)) {
+    }
+}
+
+static void unlock_deferred_frees()
+{
+    g_deferred_frees_lock.clear(std::memory_order_release);
+}
+
+static void defer_free(void* ptr, bool use_game)
+{
+    if (!ptr) {
+        return;
+    }
+    DeferredFreeEntry entry;
+    entry.ptr = ptr;
+    entry.frame = g_frame_counter.load(std::memory_order_relaxed);
+    entry.use_game = use_game;
+    lock_deferred_frees();
+    g_deferred_frees.push_back(entry);
+    unlock_deferred_frees();
+}
+
+static void drain_deferred_frees(uint64_t safe_frame, bool force)
+{
+    lock_deferred_frees();
+    size_t write = 0;
+    for (size_t i = 0; i < g_deferred_frees.size(); ++i) {
+        const DeferredFreeEntry entry = g_deferred_frees[i];
+        if (force || entry.frame <= safe_frame) {
+            if (entry.use_game && g_game_alloc.valid && g_game_alloc.free_fn) {
+                g_game_alloc.free_fn(entry.ptr);
+            } else {
+                GlobalAllocator::Free(entry.ptr);
+            }
+        } else {
+            g_deferred_frees[write++] = entry;
+        }
+    }
+    g_deferred_frees.resize(write);
+    unlock_deferred_frees();
+}
+#endif
 
 static size_t align_up_size(size_t value, size_t align)
 {
@@ -1163,12 +1339,12 @@ static void resolve_game_allocators()
 
 static void* default_alloc(size_t size, size_t alignment, void*)
 {
-    resolve_game_allocators();
     if (alignment == 0) {
         alignment = 0x1000;
     }
     const size_t aligned_size = align_up_size(size, alignment);
-    if (g_game_alloc.valid) {
+    if (g_use_game_alloc.load(std::memory_order_relaxed) &&
+        g_game_alloc.valid && g_game_alloc.aligned_alloc_fn) {
         return g_game_alloc.aligned_alloc_fn(alignment, aligned_size);
     }
     return GlobalAllocator::AllocAligned(aligned_size, alignment);
@@ -1176,8 +1352,8 @@ static void* default_alloc(size_t size, size_t alignment, void*)
 
 static void* default_realloc(void* ptr, size_t new_size, void*)
 {
-    resolve_game_allocators();
-    if (g_game_alloc.valid && g_game_alloc.realloc_fn) {
+    if (g_use_game_alloc.load(std::memory_order_relaxed) &&
+        g_game_alloc.valid && g_game_alloc.realloc_fn) {
         return g_game_alloc.realloc_fn(ptr, new_size);
     }
     return GlobalAllocator::Realloc(ptr, new_size);
@@ -1185,12 +1361,21 @@ static void* default_realloc(void* ptr, size_t new_size, void*)
 
 static void default_free(void* ptr, void*)
 {
-    resolve_game_allocators();
-    if (g_game_alloc.valid && g_game_alloc.free_fn) {
+#if RIVE_NVN_DEFER_FREES
+    if (ptr) {
+        defer_free(ptr,
+                   g_use_game_alloc.load(std::memory_order_relaxed) &&
+                       g_game_alloc.valid && g_game_alloc.free_fn);
+    }
+    return;
+#else
+    if (g_use_game_alloc.load(std::memory_order_relaxed) &&
+        g_game_alloc.valid && g_game_alloc.free_fn) {
         g_game_alloc.free_fn(ptr);
         return;
     }
     GlobalAllocator::Free(ptr);
+#endif
 }
 
 static void ensure_default_allocator()
@@ -1198,6 +1383,35 @@ static void ensure_default_allocator()
     if (g_allocator_set.load(std::memory_order_relaxed)) {
         return;
     }
+    resolve_game_allocators();
+    bool use_game_alloc = g_game_alloc.valid &&
+        g_game_alloc.aligned_alloc_fn &&
+        g_game_alloc.realloc_fn &&
+        g_game_alloc.free_fn;
+#if RIVE_NVN_USE_LOCAL_ALLOCATOR
+    ensure_local_allocator();
+    if (g_local_alloc.initialized) {
+        g_allocator.alloc = local_alloc;
+        g_allocator.realloc = local_realloc;
+        g_allocator.free = local_free;
+        g_allocator.user = nullptr;
+        g_allocator_set.store(true, std::memory_order_relaxed);
+        g_allocator_default.store(true, std::memory_order_relaxed);
+        debug_log("[rive] allocator default enabled");
+        {
+            static bool s_logged_allocator_choice = false;
+            if (!s_logged_allocator_choice) {
+                debug_log("[rive] allocator backend=local");
+                s_logged_allocator_choice = true;
+            }
+        }
+        return;
+    }
+#endif
+#if RIVE_NVN_FORCE_GLOBAL_ALLOCATOR
+    use_game_alloc = false;
+#endif
+    g_use_game_alloc.store(use_game_alloc, std::memory_order_relaxed);
     g_allocator.alloc = default_alloc;
     g_allocator.realloc = default_realloc;
     g_allocator.free = default_free;
@@ -1205,6 +1419,27 @@ static void ensure_default_allocator()
     g_allocator_set.store(true, std::memory_order_relaxed);
     g_allocator_default.store(true, std::memory_order_relaxed);
     debug_log("[rive] allocator default enabled");
+    {
+        static bool s_logged_allocator_choice = false;
+        if (!s_logged_allocator_choice) {
+            debug_log("[rive] allocator backend=%s",
+#if RIVE_NVN_FORCE_GLOBAL_ALLOCATOR
+                      "global (forced)");
+#else
+                      use_game_alloc ? "game" : "global");
+#endif
+            s_logged_allocator_choice = true;
+        }
+    }
+#if RIVE_NVN_DEFER_FREES
+    {
+        static bool s_logged_defer = false;
+        if (!s_logged_defer) {
+            debug_log("[rive] allocator deferred free enabled");
+            s_logged_defer = true;
+        }
+    }
+#endif
 }
 
 void set_error(const char* message)
@@ -1302,6 +1537,11 @@ void update_toggle_input()
                                                 std::memory_order_relaxed);
 #endif
         }
+#if RIVE_NVN_DEFER_FREES && RIVE_NVN_DEFER_FREES_UNTIL_DISABLED
+        if (!next) {
+            drain_deferred_frees(UINT64_MAX, true);
+        }
+#endif
         log_status("toggle");
 #if RIVE_NVN_ENABLE_POOL_TEST_TOGGLE
         advance_pool_test_case();
@@ -2350,9 +2590,26 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
         return false;
     }
 
-    debug_log("[rive] render_rive advance artboard");
-    rive_artboard_advance(artboard, 1.0f / 60.0f);
-    debug_log("[rive] render_rive advance ok");
+#if RIVE_NVN_ADVANCE_ARTBOARD
+    {
+        const int advanced = rive_artboard_advance(artboard, 1.0f / 60.0f);
+        static bool s_logged_advance_done = false;
+        if (!advanced && !s_logged_advance_done)
+        {
+            debug_log("[rive] artboard advance returned 0 (no further changes)");
+            s_logged_advance_done = true;
+        }
+    }
+#else
+    {
+        static bool s_logged_advance_disabled = false;
+        if (!s_logged_advance_disabled)
+        {
+            debug_log("[rive] artboard advance disabled");
+            s_logged_advance_disabled = true;
+        }
+    }
+#endif
 
     RiveFrameDescriptor frame = {};
     frame.render_target_width = g_host.target_width;
@@ -2405,9 +2662,7 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
         cmd->ClearDepthStencil(1.0f, true, 0, 0xFF);
     }
 
-    debug_log("[rive] render_rive begin frame");
     rive_render_context_begin_frame(g_host.context, &frame);
-    debug_log("[rive] render_rive begin frame ok");
 
     RiveAABB content = {};
     if (!rive_artboard_bounds(artboard, &content)) {
@@ -2424,29 +2679,47 @@ bool render_rive(nvn::Queue* queue, nvn::CommandHandle* out_handle)
     };
     RiveAlignment alignment = {0.0f, 0.0f};
 
-    debug_log("[rive] render_rive draw start");
     rive_renderer_save(g_host.renderer);
+    const float ui_scale = static_cast<float>(RIVE_NVN_UI_SCALE);
+    {
+        static bool s_logged_ui_scale = false;
+        if (!s_logged_ui_scale)
+        {
+            debug_log("[rive] ui scale=%.2f", ui_scale);
+            s_logged_ui_scale = true;
+        }
+    }
     rive_renderer_align(g_host.renderer,
                         RIVE_FIT_CONTAIN,
                         alignment,
                         frame_rect,
                         content,
-                        1.0f);
-    debug_log("[rive] render_rive draw align ok");
+                        ui_scale);
     rive_renderer_draw_artboard(g_host.renderer, artboard);
-    debug_log("[rive] render_rive draw artboard ok");
     rive_renderer_restore(g_host.renderer);
-    debug_log("[rive] render_rive draw restore ok");
 
     g_host.frame++;
+    g_frame_counter.store(g_host.frame, std::memory_order_relaxed);
     RiveFlushResources flush = {};
     flush.render_target = g_host.target;
     flush.external_command_buffer = g_host.command_buffer;
     flush.current_frame_number = g_host.frame;
-    flush.safe_frame_number = g_host.frame > 2 ? g_host.frame - 2 : 0;
-    debug_log("[rive] render_rive flush");
+    const uint32_t safe_lag = static_cast<uint32_t>(RIVE_NVN_SAFE_FRAME_LAG);
+    flush.safe_frame_number =
+        g_host.frame > safe_lag ? g_host.frame - safe_lag : 0;
+    {
+        static bool s_logged_safe_lag = false;
+        if (!s_logged_safe_lag)
+        {
+            debug_log("[rive] safe frame lag=%u",
+                      static_cast<unsigned int>(safe_lag));
+            s_logged_safe_lag = true;
+        }
+    }
     rive_render_context_flush(g_host.context, &flush);
-    debug_log("[rive] render_rive flush ok");
+#if RIVE_NVN_DEFER_FREES && !RIVE_NVN_DEFER_FREES_UNTIL_DISABLED
+    drain_deferred_frees(flush.safe_frame_number, false);
+#endif
 
     if (use_offscreen) {
         nvn::CommandBuffer* cmd = g_host.command_buffer;
@@ -3902,8 +4175,19 @@ extern "C" RIVE_EXPORT int rive_runtime_set_pending_riv_data(
     if (!data || len == 0) {
         return 0;
     }
-    g_pending_riv_data.store(data, std::memory_order_relaxed);
-    g_pending_riv_len.store(len, std::memory_order_relaxed);
+    void* copy = GlobalAllocator::AllocAligned(len, 0x10);
+    if (!copy) {
+        set_error("pending riv alloc failed");
+        return 0;
+    }
+    std::memcpy(copy, data, len);
+    if (g_pending_riv_owned) {
+        GlobalAllocator::Free(g_pending_riv_owned);
+    }
+    g_pending_riv_owned = static_cast<uint8_t*>(copy);
+    g_pending_riv_owned_len = len;
+    g_pending_riv_data.store(g_pending_riv_owned, std::memory_order_relaxed);
+    g_pending_riv_len.store(g_pending_riv_owned_len, std::memory_order_relaxed);
     g_pending_file = nullptr;
     g_pending_artboard = nullptr;
     g_artboard.store(nullptr, std::memory_order_relaxed);
