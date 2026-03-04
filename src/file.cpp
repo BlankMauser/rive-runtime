@@ -90,7 +90,7 @@
 // Default namespace for Rive Cpp code
 using namespace rive;
 
-#if defined(DEBUG) && defined(WITH_RIVE_TOOLS)
+#if defined(DEBUG)
 size_t File::debugTotalFileCount = 0;
 #endif
 
@@ -183,10 +183,12 @@ static Core* readRuntimeObject(BinaryReader& reader,
     return object;
 }
 
+bool File::deterministicMode = false;
+
 File::File(Factory* factory, rcp<FileAssetLoader> assetLoader) :
     m_factory(factory), m_assetLoader(std::move(assetLoader))
 {
-#if defined(DEBUG) && defined(WITH_RIVE_TOOLS)
+#if defined(DEBUG)
     debugTotalFileCount++;
 #endif
     assert(factory);
@@ -194,7 +196,7 @@ File::File(Factory* factory, rcp<FileAssetLoader> assetLoader) :
 
 File::~File()
 {
-#if defined(DEBUG) && defined(WITH_RIVE_TOOLS)
+#if defined(DEBUG)
     debugTotalFileCount--;
 #endif
     for (auto artboard : m_artboards)
@@ -209,6 +211,9 @@ File::~File()
     {
         viewModelInstance->unref();
     }
+#ifdef WITH_RIVE_TOOLS
+    m_viewModelInstanceRegistrar = nullptr;
+#endif
     for (auto& enumData : m_Enums)
     {
         enumData->unref();
@@ -234,7 +239,8 @@ File::~File()
 rcp<File> File::import(Span<const uint8_t> bytes,
                        Factory* factory,
                        ImportResult* result,
-                       rcp<FileAssetLoader> assetLoader)
+                       rcp<FileAssetLoader> assetLoader,
+                       ScriptingVM* vm)
 {
     BinaryReader reader(bytes);
     RuntimeHeader header;
@@ -262,6 +268,12 @@ rcp<File> File::import(Span<const uint8_t> bytes,
         return nullptr;
     }
     auto file = make_rcp<File>(factory, std::move(assetLoader));
+#ifdef WITH_RIVE_SCRIPTING
+    if (vm != nullptr)
+    {
+        file->setScriptingVM(ref_rcp(vm));
+    }
+#endif
 
     auto readResult = file->read(reader, header);
     if (result)
@@ -322,6 +334,10 @@ ImportResult File::read(BinaryReader& reader, const RuntimeHeader& header)
                 {
                     auto fa = object->as<FileAsset>();
                     m_fileAssets.push_back(rcp<FileAsset>(fa));
+                    if (object->coreType() == AudioAsset::typeKey)
+                    {
+                        m_hasAudio = true;
+                    }
                 }
                 break;
                 case ViewModel::typeKey:
@@ -541,6 +557,8 @@ ImportResult File::read(BinaryReader& reader, const RuntimeHeader& header)
             case ScriptedDrawable::typeKey:
             case ScriptedLayout::typeKey:
             case ScriptedPathEffect::typeKey:
+            case ScriptedListenerAction::typeKey:
+            case ScriptedTransitionCondition::typeKey:
             {
                 auto scriptedObject = ScriptedObject::from(object);
                 if (scriptedObject != nullptr)
@@ -609,50 +627,68 @@ ImportResult File::read(BinaryReader& reader, const RuntimeHeader& header)
 #ifdef WITH_RIVE_SCRIPTING
 void File::registerScripts()
 {
-    if (m_scriptingVM == nullptr)
-    {
-        makeScriptingVM();
-    }
-
-    // Add all scripts to the VM for registration
+    // Check if we have any script assets in the file
+    std::vector<ScriptAsset*> scripts;
     for (auto asset : m_fileAssets)
     {
         if (asset->is<ScriptAsset>())
         {
-            ScriptAsset* scriptAsset = asset->as<ScriptAsset>();
-            // At runtime, generatorFunctionRef should be 0, meaning
-            // it hasn't been registered yet with a VM.
-            if (scriptAsset->verified())
-            {
-                m_scriptingVM->addModule(scriptAsset);
-            }
+            scripts.push_back(asset->as<ScriptAsset>());
         }
     }
+    // Only make the ScriptingVM if we have any script assets
+    if (!scripts.empty())
+    {
+        // If no VM was provided (e.g., from editor), create our own.
+        if (m_scriptingVM == nullptr)
+        {
+            makeScriptingVM();
+        }
 
-    // Perform registration - ScriptingContext will handle dependencies and
-    // retries
-    m_scriptingVM->performRegistration();
+        ScriptingVM* vm = m_scriptingVM.get();
+        if (vm != nullptr)
+        {
+            for (auto scriptAsset : scripts)
+            {
+                // At runtime, if the script is verified, add it to be
+                // registered with the VM. At edit time, the script will
+                // have already been registered, so this won't run.
+                // WITH_RIVE_TOOLS allows unverified scripts for testing.
+#ifdef WITH_RIVE_TOOLS
+                vm->addModule(scriptAsset);
+#else
+                if (scriptAsset->verified())
+                {
+                    vm->addModule(scriptAsset);
+                }
+#endif
+            }
+            // Perform registration - ScriptingContext will handle dependencies
+            // and retries
+            vm->performRegistration();
+        }
+    }
 }
 
 void File::makeScriptingVM()
 {
     cleanupScriptingVM();
-    m_scriptingContext =
-        rivestd::make_unique<CPPRuntimeScriptingContext>(m_factory);
-    m_scriptingVM = rivestd::make_unique<ScriptingVM>(m_scriptingContext.get());
-    m_luaState = m_scriptingVM->state();
-    initializeLuaData(m_luaState, m_ViewModels);
+    auto context = rivestd::make_unique<CPPRuntimeScriptingContext>(m_factory);
+    m_scriptingVM = make_rcp<ScriptingVM>(std::move(context));
+    initializeLuaData(m_scriptingVM->state(), m_ViewModels);
 }
 
-void File::cleanupScriptingVM()
+lua_State* File::scriptingState()
 {
-    m_luaState = nullptr;
-    if (m_scriptingVM != nullptr)
-    {
-        m_scriptingVM.reset();
-        m_scriptingContext.reset();
-    }
+    return m_scriptingVM ? m_scriptingVM->state() : nullptr;
 }
+
+void File::setScriptingVM(rcp<ScriptingVM> vm)
+{
+    m_scriptingVM = std::move(vm);
+}
+
+void File::cleanupScriptingVM() { m_scriptingVM = nullptr; }
 #endif
 
 Artboard* File::artboard(std::string name) const
@@ -826,11 +862,9 @@ rcp<ViewModelInstance> File::copyViewModelInstance(
         viewModelInstance->clone()->as<ViewModelInstance>());
     completeViewModelInstance(copy, instancesMap);
 #ifdef WITH_RIVE_TOOLS
-    if (copy && m_triggerViewModelCreatedCallback &&
-        m_viewmodelInstanceCreatedCallback)
+    if (copy)
     {
-        // Serialize and send to Dart when instance is created
-        m_viewmodelInstanceCreatedCallback(copy.get());
+        registerViewModelInstance(copy.get(), copy);
     }
 #endif
     return copy;
@@ -852,8 +886,8 @@ rcp<ViewModelInstance> File::createViewModelInstance(std::string name) const
 }
 
 rcp<ViewModelInstance> File::createViewModelInstance(
-    std::string name,
-    std::string instanceName) const
+    const std::string& name,
+    const std::string& instanceName) const
 {
     for (auto& viewModel : m_ViewModels)
     {
@@ -901,6 +935,36 @@ uint32_t File::findViewModelId(ViewModel* search) const
     }
     return viewModelId;
 }
+
+#ifdef WITH_RIVE_TOOLS
+void File::setViewModelInstanceRegistrar(ViewModelInstanceRegistrar* registrar)
+{
+    m_viewModelInstanceRegistrar = registrar;
+}
+
+void File::registerViewModelInstance(ViewModelInstance* ptr,
+                                     rcp<ViewModelInstance> ref) const
+{
+    if (ptr != nullptr && m_viewModelInstanceRegistrar != nullptr)
+    {
+        m_viewModelInstanceRegistrar->registerInstance(ptr, std::move(ref));
+    }
+}
+
+bool File::containsViewModelInstance(ViewModelInstance* ptr) const
+{
+    return m_viewModelInstanceRegistrar != nullptr &&
+           m_viewModelInstanceRegistrar->contains(ptr);
+}
+
+void File::clearRuntimeViewModelInstances()
+{
+    if (m_viewModelInstanceRegistrar != nullptr)
+    {
+        m_viewModelInstanceRegistrar->clear();
+    }
+}
+#endif
 
 rcp<ViewModelInstance> File::createViewModelInstance(ViewModel* viewModel) const
 {
@@ -987,11 +1051,11 @@ rcp<ViewModelInstance> File::createViewModelInstance(ViewModel* viewModel) const
             propertyId++;
         }
 #ifdef WITH_RIVE_TOOLS
-        if (viewModelInstance && m_triggerViewModelCreatedCallback &&
-            m_viewmodelInstanceCreatedCallback)
+        if (viewModelInstance)
         {
-            // Serialize and send to Dart when instance is created
-            m_viewmodelInstanceCreatedCallback(viewModelInstance);
+            auto result = rcp<ViewModelInstance>(viewModelInstance);
+            registerViewModelInstance(viewModelInstance, result);
+            return result;
         }
 #endif
         return rcp<ViewModelInstance>(viewModelInstance);
@@ -1036,11 +1100,9 @@ rcp<ViewModelInstance> File::createDefaultViewModelInstance(
             viewModelInstance->clone()->as<ViewModelInstance>());
         completeViewModelInstance(copy);
 #ifdef WITH_RIVE_TOOLS
-        if (copy && m_triggerViewModelCreatedCallback &&
-            m_viewmodelInstanceCreatedCallback)
+        if (copy)
         {
-            // Serialize and send to Dart when instance is created
-            m_viewmodelInstanceCreatedCallback(copy.get());
+            registerViewModelInstance(copy.get(), copy);
         }
 #endif
         return copy;

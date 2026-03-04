@@ -23,6 +23,12 @@ if not _OPTIONS['with-webgpu'] and not _OPTIONS['for_switch'] then
             RIVE_RUNTIME_DIR .. '/renderer/src',
             RIVE_RUNTIME_DIR .. '/renderer/shader_hotload',
         })
+        
+        if _OPTIONS['with_microprofile'] then
+            links({'microprofile'})
+            includedirs({ microprofile})
+        end
+
         externalincludedirs({
             'glad',
             'glad/include',

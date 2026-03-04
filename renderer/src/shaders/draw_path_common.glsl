@@ -265,6 +265,20 @@ INLINE half eval_feathered_stroke(float4 coverages TEXTURE_CONTEXT_DECL)
 #endif // @ENABLE_FEATHER
 
 #if defined(@FRAGMENT) && defined(@ATLAS_BLIT)
+
+INLINE half filter_feather(half4 coverages,
+                           float2 atlasCoord,
+                           float2 atlasQuadCenter)
+{
+    coverages.xw = mix(coverages.xw,
+                       coverages.yz,
+                       make_half(atlasCoord.x + .5 - atlasQuadCenter.x));
+    coverages.x = mix(coverages.w,
+                      coverages.x,
+                      make_half(atlasCoord.y + .5 - atlasQuadCenter.y));
+    return clamp(coverages.x, make_half(0.0), make_half(1.0));
+}
+
 // Upscales a pre-rendered feather from the atlas, converting from gaussian
 // space to linear before doing a bilerp.
 INLINE half
@@ -274,19 +288,23 @@ filter_feather_atlas(float2 atlasCoord,
     // Gather the quad of pixels we need to filter.
     // Gather from the exact center of the quad to make sure there are no
     // rounding differences between us and the texture unit.
-    float2 atlasQuadCenter = round(atlasCoord);
+
     half4 coverages;
+    float2 atlasQuadCenter = round(atlasCoord);
+
 #ifdef @ATLAS_TEXTURE_R32UI_FLOAT_BITS
     coverages = uintBitsToFloat(uint4(TEXTURE_GATHER(@atlasTexture,
                                                      atlasSampler,
                                                      atlasQuadCenter,
                                                      atlasTextureInverseSize)));
+    return filter_feather(coverages, atlasCoord, atlasQuadCenter);
 #elif defined(@ATLAS_TEXTURE_R32I_FIXED_POINT)
     int4 coverages_i32 = int4(TEXTURE_GATHER(@atlasTexture,
                                              atlasSampler,
                                              atlasQuadCenter,
                                              atlasTextureInverseSize));
     coverages = float4(coverages_i32) * (1. / ATLAS_R32I_FIXED_POINT_FACTOR);
+    return filter_feather(coverages, atlasCoord, atlasQuadCenter);
 #elif defined(@ATLAS_TEXTURE_RGBA8_UNORM)
     int2 coord = int2(atlasQuadCenter);
     half4x4 coverages_u8x4 =
@@ -301,27 +319,17 @@ filter_feather_atlas(float2 atlasCoord,
                            255.,
                            -255.) *
                 coverages_u8x4;
+    return filter_feather(coverages, atlasCoord, atlasQuadCenter);
 #else
-    coverages = make_half4(TEXTURE_GATHER(@atlasTexture,
-                                          atlasSampler,
-                                          atlasQuadCenter,
-                                          atlasTextureInverseSize));
+    half cov = TEXTURE_SAMPLE_LOD(@atlasTexture,
+                                  atlasSampler,
+                                  atlasCoord * atlasTextureInverseSize,
+                                  .0)
+                   .r;
+    return clamp(cov, make_half(0.0), make_half(1.0));
 #endif
-    // Convert each pixel from gaussian space back to linear.
-    coverages = make_half4(INVERSE_FEATHER(coverages.x),
-                           INVERSE_FEATHER(coverages.y),
-                           INVERSE_FEATHER(coverages.z),
-                           INVERSE_FEATHER(coverages.w));
-    // Bilerp in linear space.
-    coverages.xw = mix(coverages.xw,
-                       coverages.yz,
-                       make_half(atlasCoord.x + .5 - atlasQuadCenter.x));
-    coverages.x = mix(coverages.w,
-                      coverages.x,
-                      make_half(atlasCoord.y + .5 - atlasQuadCenter.y));
-    // Go back to gaussian now that the bilerp is finished.
-    return FEATHER(coverages.x);
 }
+
 #endif // @FRAGMENT && @ATLAS_BLIT
 
 #if defined(@VERTEX) && defined(@DRAW_PATH)
@@ -907,3 +915,18 @@ unpack_atlas_coverage_vertex(float3 triangleVertex,
     return vertexPos;
 }
 #endif // @VERTEX && @ATLAS_BLIT
+
+// Converts an x,y image coordinate into a buffer index, swizzling into 32x32
+// tiles for better cache performance.
+// imageWidth must be a multiple of 32.
+uint swizzle_buffer_idx_32x32(uint2 imageCoord, uint imageWidth)
+{
+    uint idx = (imageCoord.y >> 5u) * (imageWidth << 5u) +
+               (imageCoord.x >> 5u) * (32u << 5u);
+    // Subdivide each main tile into 4x4 column-major tiles.
+    idx += ((imageCoord.x & 0x1fu) >> 2u) * (32u << 2u) +
+           ((imageCoord.y & 0x1fu) >> 2u) * (4u << 2u);
+    // Let the 4x4 tiles be row-major.
+    idx += (imageCoord.y & 0x3u) * 4u + (imageCoord.x & 0x3u);
+    return idx;
+}

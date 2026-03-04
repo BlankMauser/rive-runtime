@@ -64,7 +64,7 @@ StatusCode DataBind::import(ImportStack& importStack)
         auto input = ScriptInput::from(target());
         if (input != nullptr)
         {
-            input->dataBind(this);
+            bool ownsDataBind = true;
             if (input->scriptedObject() != nullptr)
             {
                 if (input->scriptedObject()->component() != nullptr)
@@ -73,10 +73,12 @@ StatusCode DataBind::import(ImportStack& importStack)
                         ArtboardBase::typeKey);
                     if (importer != nullptr)
                     {
+                        ownsDataBind = false;
                         importer->addDataBind(this);
                     }
                 }
             }
+            input->dataBind(this, ownsDataBind);
         }
         else if (target()->is<DataConverter>())
         {
@@ -404,7 +406,7 @@ bool DataBind::isNameBased()
 
 bool DataBind::advance(float elapsedTime)
 {
-    if (converter())
+    if (converter() && m_Source && !m_isCollapsed)
     {
         return converter()->advance(elapsedTime);
     }

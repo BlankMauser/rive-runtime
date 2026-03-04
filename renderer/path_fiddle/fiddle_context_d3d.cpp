@@ -50,6 +50,11 @@ public:
         return m_renderContext.get();
     }
 
+    rive::gpu::RenderContextD3DImpl* renderContextD3DImpl() const override final
+    {
+        return m_renderContext->static_impl_cast<RenderContextD3DImpl>();
+    }
+
     rive::gpu::RenderTarget* renderTargetOrNull() override
     {
         return m_renderTarget.get();
@@ -192,6 +197,8 @@ public:
 
         if (!m_isHeadless)
             m_swapchain->Present(0, 0);
+
+        RIVE_PROF_ENDFRAME()
 
         m_renderTarget->setTargetTexture(nullptr);
     }

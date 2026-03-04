@@ -20,6 +20,7 @@ namespace rive
 {
 class LayoutComponent;
 class ScrollConstraint;
+class ArtboardListMapRule;
 
 class ArtboardComponentList : public ArtboardComponentListBase,
                               public ArtboardHost,
@@ -63,9 +64,9 @@ public:
     Core* hitTest(HitInfo*, const Mat2D&) override;
     void update(ComponentDirt value) override;
     void updateConstraints() override;
-    void internalDataContext(DataContext* dataContext) override;
+    void internalDataContext(rcp<DataContext> dataContext) override;
     void bindViewModelInstance(rcp<ViewModelInstance> viewModelInstance,
-                               DataContext* parent) override;
+                               rcp<DataContext> parent) override;
     void clearDataContext() override;
     void unbind() override;
     void updateDataBinds() override;
@@ -98,8 +99,10 @@ public:
     }
     void shouldResetInstances(bool value) { m_shouldResetInstances = value; }
     void setVirtualizablePosition(int index, Vec2D position) override;
-    void createArtboardAt(int index);
-    void addArtboardAt(std::unique_ptr<ArtboardInstance> artboard, int index);
+    void createArtboardAt(int index, bool forceLayoutSync = true);
+    void addArtboardAt(std::unique_ptr<ArtboardInstance> artboard,
+                       int index,
+                       bool forceLayoutSync = true);
     void removeArtboardAt(int index);
     void removeArtboard(rcp<ViewModelInstanceListItem> item);
     bool virtualizationEnabled() override;
@@ -115,6 +118,7 @@ public:
     LayoutComponent* layoutParent();
     const Mat2D& listTransform() override;
     void listItemTransforms(std::vector<Mat2D*>& transforms) override;
+    void addMapRule(ArtboardListMapRule*);
 
 private:
     void updateArtboardsWorldTransform();
@@ -152,6 +156,10 @@ private:
     std::unordered_map<ArtboardInstance*, Mat2D> m_artboardTransforms;
     Vec2D artboardPosition(ArtboardInstance* artboard);
 
+    // Vectors used for access in non-virtualized mode
+    std::vector<ArtboardInstance*> m_artboardInstancesByIndex;
+    std::vector<StateMachineInstance*> m_stateMachinesByIndex;
+
     File* m_file = nullptr;
     std::vector<Vec2D> m_artboardSizes;
     Vec2D m_layoutSize;
@@ -159,6 +167,7 @@ private:
     int m_visibleEndIndex = -1;
     std::unordered_map<ArtboardInstance*, ArtboardComponentListOverride*>
         m_artboardOverridesMap;
+    std::unordered_map<int, int> m_artboardMapRules;
     void attachArtboardOverride(ArtboardInstance*,
                                 rcp<ViewModelInstanceListItem>);
     void clearArtboardOverride(ArtboardInstance*);

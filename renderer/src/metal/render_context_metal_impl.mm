@@ -149,7 +149,7 @@ public:
         desc.vertexFunction =
             [plsLibrary newFunctionWithName:@GLSL_atlasVertexMain];
         desc.fragmentFunction = [plsLibrary newFunctionWithName:fragmentMain];
-        desc.colorAttachments[0].pixelFormat = MTLPixelFormatR32Float;
+        desc.colorAttachments[0].pixelFormat = MTLPixelFormatR16Float;
         desc.colorAttachments[0].blendingEnabled = TRUE;
         desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
         desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
@@ -183,7 +183,7 @@ public:
     {
         // Each feature corresponds to a specific index in the namespaceID.
         // These must stay in sync with generate_draw_combinations.py.
-        char namespaceID[] = "000000000";
+        char namespaceID[] = "0000000000";
         static_assert(sizeof(namespaceID) ==
                       gpu::kShaderFeatureCount + 1 /*DRAW_INTERIOR_TRIANGLES*/ +
                           1 /*ATLAS_BLIT*/ + 1 /*null terminator*/);
@@ -203,6 +203,7 @@ public:
                           1 << 5);
             static_assert((int)ShaderFeatures::ENABLE_HSL_BLEND_MODES ==
                           1 << 6);
+            static_assert((int)ShaderFeatures::ENABLE_DITHER == 1 << 7);
         }
         if (drawType == DrawType::interiorTriangulation)
         {
@@ -923,7 +924,7 @@ void RenderContextMetalImpl::resizeAtlasTexture(uint32_t width, uint32_t height)
     }
 
     MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
-    desc.pixelFormat = MTLPixelFormatR32Float;
+    desc.pixelFormat = MTLPixelFormatR16Float;
     desc.width = width;
     desc.height = height;
     desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
@@ -1389,10 +1390,10 @@ void RenderContextMetalImpl::flush(const FlushDescriptor& desc)
         [atlasEncoder setVertexBuffer:m_pathPatchVertexBuffer
                                offset:0
                               atIndex:0];
-        [atlasEncoder setCullMode:MTLCullModeBack];
 
         if (desc.atlasFillBatchCount != 0)
         {
+            [atlasEncoder setCullMode:MTLCullModeNone];
             [atlasEncoder setRenderPipelineState:atlasFillpipelineState];
             for (size_t i = 0; i < desc.atlasFillBatchCount; ++i)
             {
@@ -1418,6 +1419,7 @@ void RenderContextMetalImpl::flush(const FlushDescriptor& desc)
 
         if (desc.atlasStrokeBatchCount != 0)
         {
+            [atlasEncoder setCullMode:MTLCullModeBack];
             [atlasEncoder setRenderPipelineState:atlasStrokepipelineState];
             for (size_t i = 0; i < desc.atlasStrokeBatchCount; ++i)
             {

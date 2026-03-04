@@ -362,6 +362,7 @@
     __pixel_localEXT PLS                                                       \
     {
 #define PLS_DECL4F(IDX, NAME) layout(rgba8) lowp vec4 NAME
+#define PLS_DECL4F_RGB10_A2(IDX, NAME) layout(rgb10_a2) mediump vec4 NAME
 #define PLS_DECLUI(IDX, NAME) layout(r32ui) highp uint NAME
 #define PLS_BLOCK_END                                                          \
     }                                                                          \
@@ -420,12 +421,17 @@
 #define PLS_DECL4F(IDX, NAME)                                                  \
     layout(set = PLS_TEXTURE_BINDINGS_SET, binding = IDX, rgba8)               \
         uniform lowp coherent image2D NAME
+#define PLS_DECL4F_RGB10_A2(IDX, NAME)                                         \
+    layout(set = PLS_TEXTURE_BINDINGS_SET, binding = IDX, rgb10_a2)            \
+        uniform mediump coherent image2D NAME
 #define PLS_DECLUI(IDX, NAME)                                                  \
     layout(set = PLS_TEXTURE_BINDINGS_SET, binding = IDX, r32ui)               \
         uniform highp coherent uimage2D NAME
 #else
 #define PLS_DECL4F(IDX, NAME)                                                  \
     layout(binding = IDX, rgba8) uniform lowp coherent image2D NAME
+#define PLS_DECL4F_RGB10_A2(IDX, NAME)                                         \
+    layout(binding = IDX, rgb10_a2) uniform mediump coherent image2D NAME
 #define PLS_DECLUI(IDX, NAME)                                                  \
     layout(binding = IDX, r32ui) uniform highp coherent uimage2D NAME
 #endif
@@ -572,6 +578,10 @@
     layout(location = 0) out DATA_TYPE _fd;                                    \
     void main()
 
+#define FRAG_DATA_MAIN_WITH_CLOCKWISE FRAG_DATA_MAIN
+
+#define _clockwise gl_FrontFacing
+
 #define EMIT_FRAG_DATA(VALUE) _fd = VALUE
 
 #define _fragCoord gl_FragCoord.xy
@@ -686,9 +696,13 @@ precision highp int;
 
 #if @GLSL_VERSION < 310
 // Polyfill ES 3.1+ methods.
-INLINE half4 unpackUnorm4x8(uint u)
+INLINE half4 polyfill_unpackUnorm4x8(uint u)
 {
     uint4 vals = uint4(u & 0xffu, (u >> 8) & 0xffu, (u >> 16) & 0xffu, u >> 24);
     return float4(vals) * (1. / 255.);
 }
+// Use #define for unpackUnorm4x8 because some drivers (e.g., Adreno 308)
+// incorrectly declare this builtin on ES 3.0, leading to compiler errors if we
+// just declare it as a normal function.
+#define unpackUnorm4x8 polyfill_unpackUnorm4x8
 #endif

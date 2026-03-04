@@ -111,6 +111,12 @@ RenderContext::RenderContext(std::unique_ptr<RenderContextImpl> impl) :
     // directly by pathID.
     m_maxPathID(MaxPathID(m_impl->platformFeatures().pathIDGranularity) - 1)
 {
+#ifdef RIVE_GENERATE_FEATHER_LUT
+    float table[GAUSSIAN_TABLE_SIZE];
+    generate_gausian_integral_table(table);
+    generate_inverse_gausian_integral_table(table);
+#endif
+
     setResourceSizes(ResourceAllocationCounts(), /*forceRealloc =*/true);
     releaseResources();
 }
@@ -592,7 +598,7 @@ bool RenderContext::LogicalFlush::allocateAtlasDraw(
         uint16_t atlasMaxSize = m_ctx->atlasMaxSize();
         // Use an atlas larger than atlasMaxSize if it's too small for the
         // request (meaning the render target is larger than atlasMaxSize).
-        m_atlasRectanizer = std::make_unique<skgpu::RectanizerSkyline>(
+        m_atlasRectanizer = std::make_unique<rive::RectanizerSkyline>(
             std::max(atlasMaxSize, drawWidth),
             std::max(atlasMaxSize, drawHeight));
     }
@@ -863,40 +869,47 @@ void RenderContext::flush(const FlushResources& flushResources)
 
     m_impl->prepareToFlush(flushResources.currentFrameNumber,
                            flushResources.safeFrameNumber);
-
-    mapResourceBuffers(resourceRequirements);
-
-    for (const auto& flush : m_logicalFlushes)
+    if (mapResourceBuffers(resourceRequirements))
     {
-        flush->writeResources();
+        for (const auto& flush : m_logicalFlushes)
+        {
+            flush->writeResources();
+        }
+
+        assert(m_flushUniformData.elementsWritten() == m_logicalFlushes.size());
+        assert(m_imageDrawUniformData.elementsWritten() ==
+               totalFrameResourceCounts.imageDrawCount);
+        assert(m_pathData.elementsWritten() ==
+               totalFrameResourceCounts.pathCount +
+                   layoutCounts.pathPaddingCount);
+        assert(m_paintData.elementsWritten() ==
+               totalFrameResourceCounts.pathCount +
+                   layoutCounts.paintPaddingCount);
+        assert(m_paintAuxData.elementsWritten() ==
+               totalFrameResourceCounts.pathCount +
+                   layoutCounts.paintAuxPaddingCount);
+        assert(m_contourData.elementsWritten() ==
+               totalFrameResourceCounts.contourCount +
+                   layoutCounts.contourPaddingCount);
+        assert(m_gradSpanData.elementsWritten() ==
+               layoutCounts.gradSpanCount + layoutCounts.gradSpanPaddingCount);
+        assert(m_tessSpanData.elementsWritten() <=
+               totalFrameResourceCounts.maxTessellatedSegmentCount);
+        assert(m_triangleVertexData.elementsWritten() <=
+               totalFrameResourceCounts.maxTriangleVertexCount);
+
+        unmapResourceBuffers(resourceRequirements);
+
+        // Issue logical flushes to the backend.
+        for (const auto& flush : m_logicalFlushes)
+        {
+            m_impl->flush(flush->desc());
+        }
     }
-
-    assert(m_flushUniformData.elementsWritten() == m_logicalFlushes.size());
-    assert(m_imageDrawUniformData.elementsWritten() ==
-           totalFrameResourceCounts.imageDrawCount);
-    assert(m_pathData.elementsWritten() ==
-           totalFrameResourceCounts.pathCount + layoutCounts.pathPaddingCount);
-    assert(m_paintData.elementsWritten() ==
-           totalFrameResourceCounts.pathCount + layoutCounts.paintPaddingCount);
-    assert(m_paintAuxData.elementsWritten() ==
-           totalFrameResourceCounts.pathCount +
-               layoutCounts.paintAuxPaddingCount);
-    assert(m_contourData.elementsWritten() ==
-           totalFrameResourceCounts.contourCount +
-               layoutCounts.contourPaddingCount);
-    assert(m_gradSpanData.elementsWritten() ==
-           layoutCounts.gradSpanCount + layoutCounts.gradSpanPaddingCount);
-    assert(m_tessSpanData.elementsWritten() <=
-           totalFrameResourceCounts.maxTessellatedSegmentCount);
-    assert(m_triangleVertexData.elementsWritten() <=
-           totalFrameResourceCounts.maxTriangleVertexCount);
-
-    unmapResourceBuffers(resourceRequirements);
-
-    // Issue logical flushes to the backend.
-    for (const auto& flush : m_logicalFlushes)
+    else
     {
-        m_impl->flush(flush->desc());
+        fprintf(stderr, "Buffer mapping failed, cannot render.\n");
+        unmapResourceBuffers(resourceRequirements);
     }
 
     m_impl->postFlush(flushResources);
@@ -1167,10 +1180,15 @@ void RenderContext::LogicalFlush::layoutResources(
         m_flushDesc.renderTargetUpdateBounds = {0, 0, 0, 0};
     }
 
+    m_flushDesc.virtualTileWidth = frameDescriptor.virtualTileWidth;
+    m_flushDesc.virtualTileHeight = frameDescriptor.virtualTileHeight;
+
     m_flushDesc.manuallyResolved = m_ctx->m_impl->wantsManualRenderPassResolve(
         m_flushDesc.interlockMode,
         m_flushDesc.renderTarget,
         m_flushDesc.renderTargetUpdateBounds,
+        m_flushDesc.virtualTileWidth,
+        m_flushDesc.virtualTileHeight,
         m_combinedDrawContents);
 
     m_flushDesc.fixedFunctionColorOutput =
@@ -1209,6 +1227,7 @@ void RenderContext::LogicalFlush::layoutResources(
     m_flushDesc.tessDataHeight = tessDataHeight;
     m_flushDesc.clockwiseFillOverride = frameDescriptor.clockwiseFillOverride;
     m_flushDesc.wireframe = frameDescriptor.wireframe;
+    m_flushDesc.ditherMode = m_ctx->frameDescriptor().ditherMode;
 #ifdef WITH_RIVE_TOOLS
     m_flushDesc.synthesizedFailureType = frameDescriptor.synthesizedFailureType;
 #endif
@@ -1429,10 +1448,58 @@ void RenderContext::LogicalFlush::writeResources()
         indirectDrawList.clear();
         indirectDrawList.reserve(m_drawPassCount);
 
+        // TODO: For clockwiseAtomic, these next values aren't constant (they're
+        // constants now just to have stand-in values representing the default
+        // case). Instead:
+        //  - There would be (at least) three relevant "overlap bits":
+        //    - color buffer write
+        //    - clip buffer read
+        //    - clip buffer write
+        //  - groupingType should be GroupingType::overlapAllowed (unless there
+        //    is some reason the current draw could *never* overlap anything
+        //    else)
+        //  - Any draws that write to the color buffer (which may include draws
+        //    that also use the *clip* buffer) would set the "color buffer
+        //    write" bit in its overlap bits
+        //  - Draws that are using advanced blending would set the "color buffer
+        //    write" bit in its disallow mask, so that they are not allowed to
+        //    overlap things that write to the color buffer (there is nothing
+        //    extra for advanced blending that goes into the overlap bits -
+        //    advanced blending has no bearing on whether or not things can
+        //    overlap on top of it!)
+        //  - Any draws that read from the clip buffer:
+        //    - set the "clip buffer read" bit in `overlapBits` - this gets
+        //      stored with the rectangle and signifies that the rectangle is
+        //      involved in a clip buffer read
+        //    - sets the "clip buffer write" bit in `disallowOverlapMask` - this
+        //      tells the intersection board that if this draw overlaps a clip
+        //      buffer write, it needs to go in the next draw group (there needs
+        //      to be a barrier)
+        //  - Any draws that write to the clip buffer:
+        //    - set the "clip buffer write" bit in `overlapBits`
+        //    - sets *both* the "clip buffer read/write" bits in
+        //      `disallowOverlapMask` - this means that these draws would need a
+        //      barrier between any previous overlapping clip buffer reads or
+        //      writes.
+        //  - Similarly, the ordering of the bits in the sort key would likely
+        //    want to change for this mode to ensure that the sorting preserves
+        //    proper ordering within a given draw group, since now there are
+        //    overlaps and thus draw ordering can matter.
+        //    (it also might be worth double checking that there aren't other
+        //    modes where a different sort ordering could be more efficient, to
+        //    perhaps better group like things together that don't cause
+        //    barriers)
+        constexpr static uint16_t kOverlapBits = 0;
+        constexpr static uint16_t kDisallowOverlapMask = 0;
+        constexpr static GroupingType kGroupingType = GroupingType::disjoint;
+
         if (m_ctx->m_intersectionBoard == nullptr)
         {
-            m_ctx->m_intersectionBoard = std::make_unique<IntersectionBoard>();
+            m_ctx->m_intersectionBoard =
+                std::make_unique<IntersectionBoard>(kGroupingType);
         }
+
+        assert(m_ctx->m_intersectionBoard->groupingType() == kGroupingType);
         IntersectionBoard* intersectionBoard = m_ctx->m_intersectionBoard.get();
         intersectionBoard->resizeAndReset(m_flushDesc.renderTarget->width(),
                                           m_flushDesc.renderTarget->height());
@@ -1477,7 +1544,10 @@ void RenderContext::LogicalFlush::writeResources()
             int maxPasses =
                 std::max(draw->prepassCount(), draw->subpassCount());
             int16_t drawGroupIdx =
-                intersectionBoard->addRectangle(drawBounds, maxPasses);
+                intersectionBoard->addRectangle(drawBounds,
+                                                kOverlapBits,
+                                                kDisallowOverlapMask,
+                                                maxPasses);
             assert(drawGroupIdx > 0);
             int64_t key = static_cast<int64_t>(drawGroupIdx) << kDrawGroupShift;
 
@@ -1634,6 +1704,10 @@ void RenderContext::LogicalFlush::writeResources()
                 // Insert a barrier every time the drawGroupIdx changes.
                 needsBarrierMask = kDrawGroupMask;
                 neededBarriers = BarrierFlags::plsAtomic;
+                // We need a plsAtomic barrier after the initial clears, loads,
+                // etc.
+                assert(m_pendingBarriers == BarrierFlags::none);
+                m_pendingBarriers = BarrierFlags::plsAtomic;
                 break;
 
             case gpu::InterlockMode::clockwiseAtomic:
@@ -1643,6 +1717,13 @@ void RenderContext::LogicalFlush::writeResources()
                 // changes.
                 needsBarrierMask = 1ll << 63;
                 neededBarriers = BarrierFlags::clockwiseBorrowedCoverage;
+                if (indirectDrawList.empty() || indirectDrawList[0] >= 0)
+                {
+                    // There are no borrowed coverage passes. Initiate the
+                    // transition to the main subpass immediately.
+                    assert(m_pendingBarriers == BarrierFlags::none);
+                    m_pendingBarriers = BarrierFlags::clockwiseBorrowedCoverage;
+                }
                 break;
 
             case gpu::InterlockMode::msaa:
@@ -1676,7 +1757,7 @@ void RenderContext::LogicalFlush::writeResources()
             assert(signedKey >= priorSignedKey);
             // The first draw always gets barriers because we need the barriers
             // after the initial clears, loads, etc.
-            if (priorSignedKey == BEGIN_KEY ||
+            if (priorSignedKey != BEGIN_KEY &&
                 (priorSignedKey & needsBarrierMask) !=
                     (signedKey & needsBarrierMask))
             {
@@ -1859,7 +1940,7 @@ void RenderContext::LogicalFlush::writeResources()
 
     m_flushDesc.drawList = &m_drawList;
     m_flushDesc.firstDstBlendBarrier = m_firstDstBlendBarrier;
-
+    m_flushDesc.unresolvedBarriers = m_pendingBarriers;
     // Write out the uniforms for this flush now that the flushDescriptor is
     // complete.
     m_ctx->m_flushUniformData.emplace_back(m_flushDesc, platformFeatures);
@@ -2219,86 +2300,105 @@ void RenderContext::setResourceSizes(ResourceAllocationCounts allocs,
     m_currentResourceAllocations = allocs;
 }
 
-void RenderContext::mapResourceBuffers(
+bool RenderContext::mapResourceBuffers(
     const ResourceAllocationCounts& mapCounts)
 {
     RIVE_PROF_SCOPE()
+
+#define HANDLE_MAP_FAILURE(...)                                                \
+    do                                                                         \
+    {                                                                          \
+        if (!(__VA_ARGS__))                                                    \
+        {                                                                      \
+            return false;                                                      \
+        }                                                                      \
+    } while (false)
+
     if (mapCounts.flushUniformBufferCount > 0)
     {
-        m_flushUniformData.mapElements(
+        HANDLE_MAP_FAILURE(m_flushUniformData.mapElements(
             m_impl.get(),
             &RenderContextImpl::mapFlushUniformBuffer,
-            mapCounts.flushUniformBufferCount);
+            mapCounts.flushUniformBufferCount));
     }
     assert(m_flushUniformData.hasRoomFor(mapCounts.flushUniformBufferCount));
 
     if (mapCounts.imageDrawUniformBufferCount > 0)
     {
-        m_imageDrawUniformData.mapElements(
+        HANDLE_MAP_FAILURE(m_imageDrawUniformData.mapElements(
             m_impl.get(),
             &RenderContextImpl::mapImageDrawUniformBuffer,
-            mapCounts.imageDrawUniformBufferCount);
+            mapCounts.imageDrawUniformBufferCount));
     }
     assert(m_imageDrawUniformData.hasRoomFor(
         mapCounts.imageDrawUniformBufferCount > 0));
 
     if (mapCounts.pathBufferCount > 0)
     {
-        m_pathData.mapElements(m_impl.get(),
-                               &RenderContextImpl::mapPathBuffer,
-                               mapCounts.pathBufferCount);
+        HANDLE_MAP_FAILURE(
+            m_pathData.mapElements(m_impl.get(),
+                                   &RenderContextImpl::mapPathBuffer,
+                                   mapCounts.pathBufferCount));
     }
     assert(m_pathData.hasRoomFor(mapCounts.pathBufferCount));
 
     if (mapCounts.paintBufferCount > 0)
     {
-        m_paintData.mapElements(m_impl.get(),
-                                &RenderContextImpl::mapPaintBuffer,
-                                mapCounts.paintBufferCount);
+        HANDLE_MAP_FAILURE(
+            m_paintData.mapElements(m_impl.get(),
+                                    &RenderContextImpl::mapPaintBuffer,
+                                    mapCounts.paintBufferCount));
     }
     assert(m_paintData.hasRoomFor(mapCounts.paintBufferCount));
 
     if (mapCounts.paintAuxBufferCount > 0)
     {
-        m_paintAuxData.mapElements(m_impl.get(),
-                                   &RenderContextImpl::mapPaintAuxBuffer,
-                                   mapCounts.paintAuxBufferCount);
+        HANDLE_MAP_FAILURE(
+            m_paintAuxData.mapElements(m_impl.get(),
+                                       &RenderContextImpl::mapPaintAuxBuffer,
+                                       mapCounts.paintAuxBufferCount));
     }
     assert(m_paintAuxData.hasRoomFor(mapCounts.paintAuxBufferCount));
 
     if (mapCounts.contourBufferCount > 0)
     {
-        m_contourData.mapElements(m_impl.get(),
-                                  &RenderContextImpl::mapContourBuffer,
-                                  mapCounts.contourBufferCount);
+        HANDLE_MAP_FAILURE(
+            m_contourData.mapElements(m_impl.get(),
+                                      &RenderContextImpl::mapContourBuffer,
+                                      mapCounts.contourBufferCount));
     }
     assert(m_contourData.hasRoomFor(mapCounts.contourBufferCount));
 
     if (mapCounts.gradSpanBufferCount > 0)
     {
-        m_gradSpanData.mapElements(m_impl.get(),
-                                   &RenderContextImpl::mapGradSpanBuffer,
-                                   mapCounts.gradSpanBufferCount);
+        HANDLE_MAP_FAILURE(
+            m_gradSpanData.mapElements(m_impl.get(),
+                                       &RenderContextImpl::mapGradSpanBuffer,
+                                       mapCounts.gradSpanBufferCount));
     }
     assert(m_gradSpanData.hasRoomFor(mapCounts.gradSpanBufferCount));
 
     if (mapCounts.tessSpanBufferCount > 0)
     {
-        m_tessSpanData.mapElements(m_impl.get(),
-                                   &RenderContextImpl::mapTessVertexSpanBuffer,
-                                   mapCounts.tessSpanBufferCount);
+        HANDLE_MAP_FAILURE(m_tessSpanData.mapElements(
+            m_impl.get(),
+            &RenderContextImpl::mapTessVertexSpanBuffer,
+            mapCounts.tessSpanBufferCount));
     }
     assert(m_tessSpanData.hasRoomFor(mapCounts.tessSpanBufferCount));
 
     if (mapCounts.triangleVertexBufferCount > 0)
     {
-        m_triangleVertexData.mapElements(
+        HANDLE_MAP_FAILURE(m_triangleVertexData.mapElements(
             m_impl.get(),
             &RenderContextImpl::mapTriangleVertexBuffer,
-            mapCounts.triangleVertexBufferCount);
+            mapCounts.triangleVertexBufferCount));
     }
     assert(
         m_triangleVertexData.hasRoomFor(mapCounts.triangleVertexBufferCount));
+
+#undef HANDLE_MAP_FAILURE
+    return true;
 }
 
 void RenderContext::unmapResourceBuffers(
@@ -3169,6 +3269,13 @@ gpu::DrawBatch& RenderContext::LogicalFlush::pushDraw(
     {
         shaderFeatures |= ShaderFeatures::ENABLE_CLIP_RECT;
     }
+
+    if (frameDescriptor().ditherMode ==
+        gpu::DitherMode::interleavedGradientNoise)
+    {
+        shaderFeatures |= ShaderFeatures::ENABLE_DITHER;
+    }
+
     if (paintType != PaintType::clipUpdate &&
         !(shaderMiscFlags & gpu::ShaderMiscFlags::borrowedCoveragePass))
     {

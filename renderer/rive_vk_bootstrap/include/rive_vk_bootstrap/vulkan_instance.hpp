@@ -33,7 +33,7 @@ public:
         const char* engineName = "Rive Renderer";
 
         uint32_t idealAPIVersion = VK_API_VERSION_1_3;
-        uint32_t minimumSupportedInstanceVersion = VK_API_VERSION_1_0;
+        uint32_t minimumSupportedInstanceVersion = VK_API_VERSION_1_1;
 
         rive::Span<const char*> requiredExtensions;
         rive::Span<const char*> optionalExtensions;
@@ -45,7 +45,9 @@ public:
         bool logExtendedCreationInfo = false;
     };
 
-    VulkanInstance(const Options&);
+    // Create a VulkanInstance object, or return nullptr and print to stderr on
+    // failure.
+    static std::unique_ptr<VulkanInstance> Create(const Options&);
     ~VulkanInstance();
 
     VulkanInstance(const VulkanInstance&) = delete;
@@ -67,15 +69,17 @@ public:
         VkPhysicalDeviceFeatures2* inoutFeatures);
 
 private:
+    VulkanInstance(const Options&, bool* successOut);
+
     PFN_vkVoidFunction loadInstanceFunc(const char* name) const;
 
-    std::unique_ptr<VulkanLibrary> m_library;
+    const std::unique_ptr<VulkanLibrary> m_library;
     std::vector<const char*> m_enabledExtensions;
     std::vector<const char*> m_enabledLayers;
-    uint32_t m_instanceVersion;
-    uint32_t m_apiVersion;
-    VkInstance m_instance;
-    PFN_vkDestroyInstance m_vkDestroyInstance;
+    uint32_t m_instanceVersion = 0;
+    uint32_t m_apiVersion = 0;
+    PFN_vkDestroyInstance m_vkDestroyInstance = nullptr;
+    VkInstance m_instance = VK_NULL_HANDLE;
 
     // These two are optional, at most one of them will be set
     PFN_vkGetPhysicalDeviceFeatures2 m_vkGetPhysicalDeviceFeatures2 = nullptr;

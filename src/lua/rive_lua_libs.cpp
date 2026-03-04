@@ -17,8 +17,10 @@ int luaopen_rive_renderer_library(lua_State* L);
 int luaopen_rive_properties(lua_State* L);
 int luaopen_rive_artboards(lua_State* L);
 int luaopen_rive_data_values(lua_State* L);
+int luaopen_rive_data_context(lua_State* L);
 int luaopen_rive_input(lua_State* L);
 int luaopen_rive_contex(lua_State* L);
+int luaopen_rive_audio(lua_State* L);
 
 std::unordered_map<std::string, int16_t> atoms = {
     {"length", (int16_t)LuaAtoms::length},
@@ -136,6 +138,8 @@ std::unordered_map<std::string, int16_t> atoms = {
     {"parent", (int16_t)LuaAtoms::parent},
     {"node", (int16_t)LuaAtoms::node},
     {"paint", (int16_t)LuaAtoms::paint},
+    {"asPath", (int16_t)LuaAtoms::asPath},
+    {"asPaint", (int16_t)LuaAtoms::asPaint},
     {"addToPath", (int16_t)LuaAtoms::addToPath},
     {"positionAndTangent", (int16_t)LuaAtoms::positionAndTangent},
     {"warp", (int16_t)LuaAtoms::warp},
@@ -144,10 +148,31 @@ std::unordered_map<std::string, int16_t> atoms = {
     {"isClosed", (int16_t)LuaAtoms::isClosed},
     {"markNeedsUpdate", (int16_t)LuaAtoms::markNeedsUpdate},
     {"viewModel", (int16_t)LuaAtoms::viewModel},
+    {"rootViewModel", (int16_t)LuaAtoms::rootViewModel},
+    {"dataContext", (int16_t)LuaAtoms::dataContext},
+    {"image", (int16_t)LuaAtoms::image},
+    {"blob", (int16_t)LuaAtoms::blob},
+    {"size", (int16_t)LuaAtoms::size},
     {"duration", (int16_t)LuaAtoms::duration},
     {"setTime", (int16_t)LuaAtoms::setTime},
     {"setTimeFrames", (int16_t)LuaAtoms::setTimeFrames},
     {"setTimePercentage", (int16_t)LuaAtoms::setTimePercentage},
+    {"audio", (int16_t)LuaAtoms::audio},
+    {"play", (int16_t)LuaAtoms::play},
+    {"playAtTime", (int16_t)LuaAtoms::playAtTime},
+    {"playInTime", (int16_t)LuaAtoms::playInTime},
+    {"playAtFrame", (int16_t)LuaAtoms::playAtFrame},
+    {"playInFrame", (int16_t)LuaAtoms::playInFrame},
+    {"stop", (int16_t)LuaAtoms::stop},
+    {"pause", (int16_t)LuaAtoms::pause},
+    {"resume", (int16_t)LuaAtoms::resume},
+    {"seek", (int16_t)LuaAtoms::seek},
+    {"seekFrame", (int16_t)LuaAtoms::seekFrame},
+    {"volume", (int16_t)LuaAtoms::volume},
+    {"completed", (int16_t)LuaAtoms::completed},
+    {"time", (int16_t)LuaAtoms::time},
+    {"timeFrame", (int16_t)LuaAtoms::timeFrame},
+    {"sampleRate", (int16_t)LuaAtoms::sampleRate},
 };
 
 static const luaL_Reg lualibs[] = {
@@ -167,6 +192,8 @@ static const luaL_Reg lualibs[] = {
     {"dataValue", luaopen_rive_data_values},
     {"input", luaopen_rive_input},
     {"context", luaopen_rive_contex},
+    {"dataContext", luaopen_rive_data_context},
+    {"audio", luaopen_rive_audio},
     {NULL, NULL},
 };
 
@@ -342,38 +369,37 @@ void ScriptingVM::init(lua_State* state, ScriptingContext* context)
     luaL_sandboxthread(state);
 }
 
-ScriptingVM::ScriptingVM(ScriptingContext* context) : m_context(context)
+ScriptingVM::ScriptingVM(std::unique_ptr<ScriptingContext> context) :
+    m_ownedContext(std::move(context))
 {
     m_state = lua_newstate(l_alloc, nullptr);
-    init(m_state, m_context);
+    init(m_state, m_ownedContext.get());
 }
 
 ScriptingVM::~ScriptingVM() { lua_close(m_state); }
 
-static int register_module(lua_State* L)
+void ScriptingVM::replaceContext(std::unique_ptr<ScriptingContext> newContext)
 {
-    // This is only called internally where we ensure we're pushing the right
-    // elements on the stack so we can assert these at debug time only.
-    assert(lua_gettop(L) == 2 &&
-           "expected 2 arguments: require script name and desired result");
-    assert(luaL_checkstring(L, 1) &&
-           "first argument must be the name of the script");
-
-    luaL_findtable(L, LUA_REGISTRYINDEX, registeredCacheTableKey, 1);
-    // (1) path, (2) result, (3) cache table
-
-    lua_insert(L, 1);
-    // (1) cache table, (2) path, (3) result
-
-    lua_settable(L, 1);
-    // (1) cache table
-
-    lua_pop(L, 1);
-
-    return 0;
+    m_ownedContext = std::move(newContext);
+    lua_setthreaddata(m_state, m_ownedContext.get());
 }
 
-static bool push_module(lua_State* L, const char* name, Span<uint8_t> bytecode)
+void ScriptingVM::addModule(ModuleDetails* moduleDetails)
+{
+    context()->addModule(moduleDetails);
+}
+
+void ScriptingVM::performRegistration()
+{
+    context()->performRegistration(m_state);
+}
+
+// Loads bytecode into a sandboxed thread without executing it.
+// On success, pushes the module thread (with loaded closure) onto L's stack.
+// Returns true on success.
+bool ScriptingVM::loadModule(lua_State* L,
+                             const char* name,
+                             Span<uint8_t> bytecode)
 {
     if (bytecode.empty())
     {
@@ -392,32 +418,55 @@ static bool push_module(lua_State* L, const char* name, Span<uint8_t> bytecode)
     int status =
         luau_load(ML, name, (const char*)bytecode.data(), bytecode.size(), 0);
 
+    if (status != 0)
+    {
+        // luau_load failed — error string is on ML stack
+        lua_xmove(ML, L, 1);
+        ScriptingContext* context =
+            static_cast<ScriptingContext*>(lua_getthreaddata(L));
+        context->printError(L);
+        lua_pop(L, 2); // pop error + thread
+        return false;
+    }
+
+    // Thread with loaded closure is on top of L's stack.
+    return true;
+}
+
+// Executes a previously loaded module thread (on top of L's stack from
+// loadModule). On success, replaces the thread with the module result.
+// If isUtility, also registers the result in the require cache.
+// Returns true on success.
+bool ScriptingVM::executeModule(lua_State* L, const char* name, bool isUtility)
+{
+    // The module thread should be on top of the stack.
+    lua_State* ML = lua_tothread(L, -1);
+    if (ML == nullptr)
+    {
+        return false;
+    }
+
+    int status = lua_resume(ML, L, 0);
     if (status == 0)
     {
-        int status = lua_resume(ML, L, 0);
-        if (status == 0)
+        if (lua_gettop(ML) == 0)
         {
-            if (lua_gettop(ML) == 0)
-            {
-                lua_pushfstring(ML, "%s:1: module must return a value", name);
-            }
-            else if (!lua_istable(ML, -1) && !lua_isfunction(ML, -1))
-            {
-                lua_pushfstring(ML,
-                                "%s:1: module must return a table or function",
-                                name);
-            }
+            lua_pushfstring(ML, "%s:1: module must return a value", name);
         }
-        else if (status == LUA_YIELD)
-        {
-            lua_pushfstring(ML, "%s:1: module can not yield", name);
-        }
-        else if (!lua_isstring(ML, -1))
+        else if (!lua_istable(ML, -1) && !lua_isfunction(ML, -1))
         {
             lua_pushfstring(ML,
-                            "%s:1: unknown error while running module",
+                            "%s:1: module must return a table or function",
                             name);
         }
+    }
+    else if (status == LUA_YIELD)
+    {
+        lua_pushfstring(ML, "%s:1: module can not yield", name);
+    }
+    else if (!lua_isstring(ML, -1))
+    {
+        lua_pushfstring(ML, "%s:1: unknown error while running module", name);
     }
 
     // add ML result to L stack
@@ -428,12 +477,23 @@ static bool push_module(lua_State* L, const char* name, Span<uint8_t> bytecode)
         ScriptingContext* context =
             static_cast<ScriptingContext*>(lua_getthreaddata(L));
         context->printError(L);
-        lua_pop(L, 2);
+        lua_pop(L, 2); // pop error + thread
         return false;
     }
     // remove ML thread from L stack
     lua_remove(L, -2);
     // added one value to L stack: module result
+
+    if (isUtility)
+    {
+        // Register into the require cache directly.
+        luaL_findtable(L, LUA_REGISTRYINDEX, registeredCacheTableKey, 1);
+        lua_pushstring(L, name);
+        lua_pushvalue(L, -3); // copy module result (below cache table + name)
+        lua_settable(L, -3);  // cache[name] = result
+        lua_pop(L, 1);        // pop cache table
+    }
+
     return true;
 }
 
@@ -487,10 +547,13 @@ void ScriptingContext::addModule(ModuleDetails* moduleDetails)
 bool ScriptingContext::tryRegisterModule(lua_State* state,
                                          ModuleDetails* moduleDetails)
 {
+#ifndef WITH_RIVE_TOOLS
+    // In production builds, only allow verified (signed) scripts
     if (!moduleDetails->verified())
     {
         return false;
     }
+#endif
     const std::string& name = moduleDetails->moduleName();
     bool registerSuccess = false;
     int functionRef = 0;
@@ -535,10 +598,16 @@ void ScriptingContext::performRegistration(lua_State* state)
     // required dependencies
     for (ModuleDetails* moduleDetails : m_modulesToRegister)
     {
-        // Skip if already registered
-        if (checkRegisteredModules(state,
-                                   moduleDetails->moduleName().c_str()) == 1)
+        if (moduleDetails == nullptr)
         {
+            continue;
+        }
+        std::string moduleName = moduleDetails->moduleName();
+
+        // Skip if already registered
+        if (checkRegisteredModules(state, moduleName.c_str()) == 1)
+        {
+            lua_pop(state, 1);
             continue;
         }
         tryRegisterModule(state, moduleDetails);
@@ -649,17 +718,42 @@ void ScriptingContext::onModuleRegistered(ModuleDetails* moduleDetails)
     }
 }
 
+#ifdef WITH_RIVE_TOOLS
+void ScriptingContext::setGeneratorRef(uint32_t assetId, int ref)
+{
+    m_assetGeneratorRefs[assetId] = ref;
+}
+
+int ScriptingContext::getGeneratorRef(uint32_t assetId) const
+{
+    auto it = m_assetGeneratorRefs.find(assetId);
+    return it != m_assetGeneratorRefs.end() ? it->second : 0;
+}
+
+void ScriptingContext::clearGeneratorRefs() { m_assetGeneratorRefs.clear(); }
+
+bool ScriptingContext::hasGeneratorRef(uint32_t assetId) const
+{
+    return m_assetGeneratorRefs.find(assetId) != m_assetGeneratorRefs.end();
+}
+#endif
+
 bool ScriptingVM::registerScript(lua_State* state,
                                  const char* name,
                                  Span<uint8_t> bytecode)
 {
-    // Check if already registered
+    // Check if already registered - leave module on stack for caller to use
     if (checkRegisteredModules(state, name) == 1)
     {
         return true;
     }
 
-    if (!push_module(state, name, bytecode))
+    if (!loadModule(state, name, bytecode))
+    {
+        return false;
+    }
+
+    if (!executeModule(state, name, false))
     {
         return false;
     }
@@ -674,18 +768,23 @@ bool ScriptingVM::registerModule(lua_State* state,
     // Check if already registered
     if (checkRegisteredModules(state, name) == 1)
     {
+        lua_pop(state, 1);
         return true;
     }
 
-    lua_pushcfunction(state, register_module, nullptr);
-    lua_pushstring(state, name);
-    if (!push_module(state, name, bytecode))
+    if (!loadModule(state, name, bytecode))
     {
-        lua_pop(state, 2);
         return false;
     }
 
-    lua_call(state, 2, 0);
+    if (!executeModule(state, name, true))
+    {
+        return false;
+    }
+
+    // executeModule with isUtility=true registers into the require cache
+    // and leaves the module result on the stack. Pop it.
+    lua_pop(state, 1);
     return true;
 }
 

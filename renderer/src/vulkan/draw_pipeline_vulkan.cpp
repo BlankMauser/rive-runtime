@@ -149,8 +149,18 @@ uint64_t DrawPipelineVulkan::PipelineProps::createKey() const
 
 uint32_t subpass_index(gpu::DrawType drawType,
                        gpu::LoadAction colorLoadAction,
-                       gpu::InterlockMode interlockMode)
+                       gpu::InterlockMode interlockMode,
+                       gpu::ShaderMiscFlags shaderMiscFlags)
 {
+    if (interlockMode == gpu::InterlockMode::clockwiseAtomic)
+    {
+        // In clockwiseAtomic mode, borrowed coverage is rendered in a separate
+        // subpass prior to the main one.
+        return (shaderMiscFlags & gpu::ShaderMiscFlags::borrowedCoveragePass)
+                   ? 0
+                   : 1;
+    }
+
     const uint32_t mainSubpassIdx =
         (interlockMode == gpu::InterlockMode::msaa &&
          colorLoadAction == gpu::LoadAction::preserveRenderTarget)
@@ -206,8 +216,10 @@ DrawPipelineVulkan::DrawPipelineVulkan(
 
     const gpu::PipelineState& pipelineState = props.pipelineState;
     const gpu::InterlockMode interlockMode = pipelineLayout.interlockMode();
-    uint32_t subpassIndex =
-        subpass_index(props.drawType, props.colorLoadAction, interlockMode);
+    uint32_t subpassIndex = subpass_index(props.drawType,
+                                          props.colorLoadAction,
+                                          interlockMode,
+                                          props.shaderMiscFlags);
 
     auto& vertShader =
         pipelineManager->getVertexShaderSynchronous(props.drawType,
@@ -236,6 +248,7 @@ DrawPipelineVulkan::DrawPipelineVulkan(
         props.shaderFeatures & gpu::ShaderFeatures::ENABLE_EVEN_ODD,
         props.shaderFeatures & gpu::ShaderFeatures::ENABLE_NESTED_CLIPPING,
         props.shaderFeatures & gpu::ShaderFeatures::ENABLE_HSL_BLEND_MODES,
+        props.shaderFeatures & gpu::ShaderFeatures::ENABLE_DITHER,
         props.shaderMiscFlags & gpu::ShaderMiscFlags::clockwiseFill,
         props.shaderMiscFlags & gpu::ShaderMiscFlags::borrowedCoveragePass,
         pipelineManager->vendorID(),
@@ -247,10 +260,11 @@ DrawPipelineVulkan::DrawPipelineVulkan(
     static_assert(EVEN_ODD_SPECIALIZATION_IDX == 4);
     static_assert(NESTED_CLIPPING_SPECIALIZATION_IDX == 5);
     static_assert(HSL_BLEND_MODES_SPECIALIZATION_IDX == 6);
-    static_assert(CLOCKWISE_FILL_SPECIALIZATION_IDX == 7);
-    static_assert(BORROWED_COVERAGE_PASS_SPECIALIZATION_IDX == 8);
-    static_assert(VULKAN_VENDOR_ID_SPECIALIZATION_IDX == 9);
-    static_assert(SPECIALIZATION_COUNT == 10);
+    static_assert(DITHER_SPECIALIZATION_IDX == 7);
+    static_assert(CLOCKWISE_FILL_SPECIALIZATION_IDX == 8);
+    static_assert(BORROWED_COVERAGE_PASS_SPECIALIZATION_IDX == 9);
+    static_assert(VULKAN_VENDOR_ID_SPECIALIZATION_IDX == 10);
+    static_assert(SPECIALIZATION_COUNT == 11);
 
     VkSpecializationMapEntry permutationMapEntries[SPECIALIZATION_COUNT];
     for (uint32_t i = 0; i < SPECIALIZATION_COUNT; ++i)
@@ -298,7 +312,6 @@ DrawPipelineVulkan::DrawPipelineVulkan(
         };
 
     gpu::BlendEquation blendEquation = pipelineState.blendEquation;
-    bool blendEquationPremultiplied = true;
     // The pipeline state gets generated under the assumption that pixel local
     // storage can still be written when colorWriteEnabled is false. So when
     // Vulkan implements PLS via color attachments, we need to override the
@@ -325,13 +338,6 @@ DrawPipelineVulkan::DrawPipelineVulkan(
         // re-emitting the current value) when a PLS plane needs to remain
         // unchanged during a fragment invocation.
         blendEquation = gpu::BlendEquation::srcOver;
-        // Image draws use premultiplied src-over so they can blend the image
-        // with the previous paint together, out of order. (Premultiplied
-        // src-over is associative.)
-        //
-        // Otherwise we save 3 flops and let the ROP multiply alpha into the
-        // color when it does the blending.
-        blendEquationPremultiplied = gpu::DrawTypeIsImageDraw(props.drawType);
     }
 #ifndef NDEBUG
     else if (props.shaderMiscFlags &
@@ -356,12 +362,6 @@ DrawPipelineVulkan::DrawPipelineVulkan(
         {
             // Forward coverage clockwise draws are all unmultiplied src-over.
             blendEquation = gpu::BlendEquation::srcOver;
-            // FIXME: clockwiseAtomic paths should be updated to use
-            // premultiplied alpha.
-            const bool isClockwiseAtomicPathDraw =
-                !gpu::DrawTypeIsImageDraw(props.drawType) &&
-                props.drawType != gpu::DrawType::atlasBlit;
-            blendEquationPremultiplied = !isClockwiseAtomicPathDraw;
         }
     }
 
@@ -372,9 +372,7 @@ DrawPipelineVulkan::DrawPipelineVulkan(
                                             pipelineLayout.renderPassOptions()),
         {
             .blendEnable = blendEquation != gpu::BlendEquation::none,
-            .srcColorBlendFactor = blendEquationPremultiplied
-                                       ? VK_BLEND_FACTOR_ONE
-                                       : VK_BLEND_FACTOR_SRC_ALPHA,
+            .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
             .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
             .colorBlendOp = vk_blend_op(pipelineState.blendEquation),
             .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,

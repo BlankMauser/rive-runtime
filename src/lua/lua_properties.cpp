@@ -243,14 +243,35 @@ int ScriptedViewModel::instance(lua_State* L)
 {
     if (m_viewModel)
     {
-#ifdef WITH_RIVE_TOOLS
-        m_viewModel->file()->triggerViewModelCreatedCallback(true);
-#endif
-        auto instance = m_viewModel->createInstance();
-#ifdef WITH_RIVE_TOOLS
-        m_viewModel->file()->triggerViewModelCreatedCallback(false);
-#endif
-        lua_newrive<ScriptedViewModel>(L, L, m_viewModel, instance);
+
+        int nargs = lua_gettop(L);
+        if (nargs == 2)
+        {
+            if (lua_isnoneornil(L, -1) || !lua_isstring(L, -1))
+            {
+                auto instance = m_viewModel->createInstance();
+                lua_newrive<ScriptedViewModel>(L, L, m_viewModel, instance);
+            }
+            else
+            {
+                const char* instanceName = lua_tostring(L, -1);
+                auto instance = m_viewModel->createFromInstance(instanceName);
+                if (!instance)
+                {
+                    instance = m_viewModel->createInstance();
+                }
+                lua_newrive<ScriptedViewModel>(L, L, m_viewModel, instance);
+            }
+        }
+        else
+        {
+            auto instance = m_viewModel->createInstance();
+            lua_newrive<ScriptedViewModel>(L, L, m_viewModel, instance);
+        }
+    }
+    else
+    {
+        lua_pushnil(L);
     }
     return 1;
 }

@@ -81,8 +81,8 @@ public:
     // These are sorted with the most preferred types higher up in the list.
     enum class AtlasType
     {
-        r32f, // Most preferred. Uses HW blending to count coverage.
-        r16f, // Uses HW blending but loses precision on complex feathers.
+        r16f, // Most preferred. Balances performances with precision.
+        r32f, // Uses HW blending to count coverage.
 
         r32uiFramebufferFetch, // Stores coverage as fp32 bits in a uint.
         r32uiPixelLocalStorage,
@@ -221,6 +221,33 @@ private:
 
     void flush(const FlushDescriptor&) override;
 
+    // We have observed Adreno 308 crash when drawing too many instances spread
+    // across any number of draw calls. This class breaks them up with glFlush
+    // in order to fix the crashes.
+    class GLFlushInjector
+    {
+    public:
+        GLFlushInjector(const GLCapabilities& capabilities) :
+            m_maxSupportedInstancesPerFlush(
+                capabilities.maxSupportedInstancesPerFlush)
+        {}
+
+        void flushBeforeInstancedDrawIfNeeded(uint32_t nextInstanceCount)
+        {
+            if (m_currentFlushInstanceCount + nextInstanceCount >
+                m_maxSupportedInstancesPerFlush)
+            {
+                glFlush();
+                m_currentFlushInstanceCount = 0;
+            }
+            m_currentFlushInstanceCount += nextInstanceCount;
+        }
+
+    private:
+        const uint32_t m_maxSupportedInstancesPerFlush;
+        uint32_t m_currentFlushInstanceCount = 0;
+    };
+
     // Issues the equivalent of glDrawElementsInstancedBaseInstanceEXT(),
     // assuming no vertex attribs are instanced, indices are uint16_t, and
     // applying workarounds for known driver bugs.
@@ -234,7 +261,8 @@ private:
         uint32_t baseIndex,
         uint32_t instanceCount,
         uint32_t baseInstance,
-        GLint baseInstanceUniformLocation);
+        GLint baseInstanceUniformLocation,
+        GLFlushInjector*);
 
     GLCapabilities m_capabilities;
 

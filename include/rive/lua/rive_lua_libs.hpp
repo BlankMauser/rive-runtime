@@ -4,6 +4,7 @@
 #include "lua.h"
 #include "lualib.h"
 #include "rive/animation/linear_animation_instance.hpp"
+#include "rive/assets/file_asset.hpp"
 #include "rive/assets/script_asset.hpp"
 #include "rive/lua/lua_state.hpp"
 #include "rive/math/raw_path.hpp"
@@ -32,9 +33,20 @@
 #include "rive/data_bind/data_values/data_value_string.hpp"
 #include "rive/viewmodel/viewmodel.hpp"
 #include "rive/hit_result.hpp"
+#include "rive/lua/scripting_vm.hpp"
 #include "rive/refcnt.hpp"
+#ifdef WITH_RIVE_AUDIO
+#include "rive/audio/audio_engine.hpp"
+#include "rive/audio/audio_source.hpp"
+#include "rive/audio/audio_sound.hpp"
+#endif
+#ifdef WITH_RIVE_TOOLS
+#include "rive/core/binary_writer.hpp"
+#include "rive/core/vector_binary_stream.hpp"
+#endif
 
 #include <chrono>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -201,6 +213,8 @@ enum class LuaAtoms : int16_t
     parent,
     node,
     paint,
+    asPaint,
+    asPath,
 
     // PathMeasure/ContourMeasure
     positionAndTangent,
@@ -212,6 +226,27 @@ enum class LuaAtoms : int16_t
     // Scripted Context
     markNeedsUpdate,
     viewModel,
+    rootViewModel,
+    image,
+    blob,
+    size,
+    dataContext,
+    audio,
+    play,
+    playAtTime,
+    playInTime,
+    playAtFrame,
+    playInFrame,
+    stop,
+    pause,
+    resume,
+    seek,
+    seekFrame,
+    volume,
+    completed,
+    time,
+    timeFrame,
+    sampleRate,
 
     // Animation
     duration,
@@ -331,6 +366,59 @@ public:
     static constexpr const char* luaName = "Image";
     static constexpr bool hasMetatable = true;
 };
+
+class ScriptedBlob
+{
+public:
+    rcp<FileAsset> asset; // Holds ref to keep BlobAsset alive
+
+    static constexpr uint8_t luaTag = LUA_T_COUNT + 35;
+    static constexpr const char* luaName = "Blob";
+    static constexpr bool hasMetatable = true;
+};
+
+#ifdef WITH_RIVE_AUDIO
+
+class ScriptedAudio
+{
+public:
+    static constexpr uint8_t luaTag = LUA_T_COUNT + 40;
+    static constexpr const char* luaName = "Audio";
+    static constexpr bool hasMetatable = true;
+};
+
+class ScriptedAudioSource
+{
+public:
+    static constexpr uint8_t luaTag = LUA_T_COUNT + 38;
+    static constexpr const char* luaName = "AudioSource";
+    static constexpr bool hasMetatable = true;
+    void source(rcp<AudioSource>);
+    rcp<AudioSource> source() { return m_source; }
+    int play(lua_State*, AudioEngine*);
+    int play(lua_State*, AudioEngine*, double, bool);
+    int playFrame(lua_State*, AudioEngine*);
+    int playFrame(lua_State*, AudioEngine*, uint64_t, bool);
+
+private:
+    rcp<AudioSource> m_source;
+    int initializeSound(lua_State*, rcp<AudioSound>, Artboard*);
+};
+
+class ScriptedAudioSound
+{
+public:
+    ScriptedAudioSound(Artboard* artboard) : m_artboard(artboard) {}
+    rcp<AudioSound> sound;
+    static constexpr uint8_t luaTag = LUA_T_COUNT + 39;
+    static constexpr const char* luaName = "AudioSound";
+    static constexpr bool hasMetatable = true;
+    Artboard* artboard() { return m_artboard; }
+
+private:
+    Artboard* m_artboard = nullptr;
+};
+#endif
 
 class ScriptedImageSampler
 {
@@ -484,7 +572,9 @@ class ScriptReffedArtboard : public RefCnt<ScriptReffedArtboard>
 {
 public:
     ScriptReffedArtboard(rcp<File> file,
-                         std::unique_ptr<ArtboardInstance>&& artboardInstance);
+                         std::unique_ptr<ArtboardInstance>&& artboardInstance,
+                         rcp<ViewModelInstance> viewModelInstance,
+                         rcp<DataContext> parentDataContext);
 
     ~ScriptReffedArtboard();
     rive::rcp<rive::File> file();
@@ -504,7 +594,9 @@ class ScriptedArtboard
 public:
     ScriptedArtboard(lua_State* L,
                      rcp<File> file,
-                     std::unique_ptr<ArtboardInstance>&& artboardInstance);
+                     std::unique_ptr<ArtboardInstance>&& artboardInstance,
+                     rcp<ViewModelInstance> viewModelInstance,
+                     rcp<DataContext> dataContext);
     ~ScriptedArtboard();
 
     static constexpr uint8_t luaTag = LUA_T_COUNT + 10;
@@ -527,7 +619,7 @@ public:
     }
 
     int pushData(lua_State* L);
-    int instance(lua_State* L);
+    int instance(lua_State* L, rcp<ViewModelInstance> viewModelInstance);
     int animation(lua_State* L, const char* animationName);
 
     bool advance(float seconds);
@@ -535,8 +627,9 @@ public:
     void cleanupDataRef(lua_State* L);
 
 private:
-    lua_State* m_state;
-    rcp<ScriptReffedArtboard> m_scriptReffedArtboard;
+    lua_State* m_state = nullptr;
+    rcp<ScriptReffedArtboard> m_scriptReffedArtboard = nullptr;
+    rcp<DataContext> m_dataContext = nullptr;
     int m_dataRef = 0;
 };
 
@@ -822,6 +915,7 @@ class ScriptingContext
 {
 public:
     ScriptingContext(Factory* factory) : m_factory(factory) {}
+    virtual ~ScriptingContext() = default;
     Factory* factory() const { return m_factory; }
 
     virtual void printError(lua_State* state) = 0;
@@ -852,49 +946,23 @@ private:
     Factory* m_factory;
     std::vector<ModuleDetails*> m_modulesToRegister;
     std::unordered_map<std::string, ModuleDetails*> m_moduleLookup;
-
     std::unordered_set<ModuleDetails*> m_pendingModules;
-};
 
-class ScriptingVM
-{
+#ifdef WITH_RIVE_TOOLS
+    // Editor-only: Map from asset ID to generator function ref.
+    // Allows direct ScriptedObject reinitialization without regenerating
+    // the runtime file.
+    std::unordered_map<uint32_t, int> m_assetGeneratorRefs;
+    bool m_isPlaying = false;
+
 public:
-    ScriptingVM(ScriptingContext* context);
-    ~ScriptingVM();
-
-    // ScriptingContext& context() { return m_context; }
-    lua_State* state() { return m_state; }
-
-    static void init(lua_State* state, ScriptingContext* context);
-
-    // Add a module to be registered later via performRegistration()
-    void addModule(ModuleDetails* moduleDetails)
-    {
-        m_context->addModule(moduleDetails);
-    }
-
-    // Perform registration of all added modules, handling dependencies and
-    // retries
-    void performRegistration() { m_context->performRegistration(m_state); }
-
-    static bool registerModule(lua_State* state,
-                               const char* name,
-                               Span<uint8_t> bytecode);
-    static void unregisterModule(lua_State* state, const char* name);
-    bool registerModule(const char* name, Span<uint8_t> bytecode);
-    void unregisterModule(const char* name);
-
-    static bool registerScript(lua_State* state,
-                               const char* name,
-                               Span<uint8_t> bytecode);
-
-    bool registerScript(const char* name, Span<uint8_t> bytecode);
-
-    static void dumpStack(lua_State* state);
-
-private:
-    lua_State* m_state;
-    ScriptingContext* m_context;
+    void setGeneratorRef(uint32_t assetId, int ref);
+    int getGeneratorRef(uint32_t assetId) const;
+    void clearGeneratorRefs();
+    bool hasGeneratorRef(uint32_t assetId) const;
+    void isPlaying(bool value) { m_isPlaying = value; }
+    bool isPlaying() const { return m_isPlaying; }
+#endif
 };
 
 class ScriptedDataValue
@@ -998,13 +1066,13 @@ public:
     TransformComponent* component() { return m_component; }
     rcp<ScriptReffedArtboard> artboard() { return m_artboard; }
 
-    const ShapePaint* shapePaint() { return m_shapePaint; }
+    const ShapePaint* shapePaint();
     void shapePaint(const ShapePaint* shapePaint) { m_shapePaint = shapePaint; }
 
 private:
     rcp<ScriptReffedArtboard> m_artboard;
-    TransformComponent* m_component;
-    const ShapePaint* m_shapePaint;
+    TransformComponent* m_component = nullptr;
+    const ShapePaint* m_shapePaint = nullptr;
 };
 
 class ScriptedContourMeasure
@@ -1050,19 +1118,38 @@ public:
     static constexpr uint8_t luaTag = LUA_T_COUNT + 28;
     static constexpr const char* luaName = "Context";
     static constexpr bool hasMetatable = true;
+    void dispose() { m_disposed = true; }
+    bool disposed() { return m_disposed; }
 
 private:
     ScriptedObject* m_scriptedObject = nullptr;
+    bool m_disposed = false;
 };
 
 static void interruptCPP(lua_State* L, int gc);
 
+#ifdef WITH_RIVE_TOOLS
+// Callback type for notifying when console data is available.
+// If null, console output goes to stdout.
+using ConsoleCallback = void (*)();
+#endif
+
 class CPPRuntimeScriptingContext : public ScriptingContext
 {
 public:
+#ifdef WITH_RIVE_TOOLS
+    CPPRuntimeScriptingContext(Factory* factory,
+                               int timeoutMs = 200,
+                               ConsoleCallback consoleCallback = nullptr) :
+        ScriptingContext(factory),
+        m_timeoutMs(timeoutMs),
+        m_consoleCallback(consoleCallback)
+    {}
+#else
     CPPRuntimeScriptingContext(Factory* factory, int timeoutMs = 200) :
         ScriptingContext(factory), m_timeoutMs(timeoutMs)
     {}
+#endif
     virtual ~CPPRuntimeScriptingContext() = default;
 
     std::chrono::time_point<std::chrono::steady_clock> executionTime;
@@ -1072,14 +1159,57 @@ public:
 
     int pCall(lua_State* state, int nargs, int nresults) override;
 
-    void printBeginLine(lua_State* state) override {}
-    void print(Span<const char> data) override
+    void printBeginLine(lua_State* state) override
     {
-        auto message = std::string(data.data(), data.size());
-        puts(message.c_str());
+#ifdef WITH_RIVE_TOOLS
+        BinaryWriter writer(&m_consoleBuffer);
+        lua_Debug ar;
+        lua_getinfo(state, 1, "sl", &ar);
+        writer.write((uint8_t)0);
+        writer.write(ar.source);
+        writer.writeVarUint((uint32_t)ar.currentline);
+#endif
     }
 
-    void printEndLine() override { puts("\n"); }
+    void print(Span<const char> data) override
+    {
+#ifdef WITH_RIVE_TOOLS
+        if (data.size() == 0)
+        {
+            return;
+        }
+        BinaryWriter writer(&m_consoleBuffer);
+        writer.writeVarUint((uint64_t)data.size());
+        writer.write((const uint8_t*)data.data(), (size_t)data.size());
+
+        if (m_consoleCallback == nullptr)
+#endif
+        {
+            auto message = std::string(data.data(), data.size());
+            printf("%s", message.c_str());
+        }
+    }
+
+    void printEndLine() override
+    {
+#ifdef WITH_RIVE_TOOLS
+        BinaryWriter writer(&m_consoleBuffer);
+        writer.writeVarUint((uint32_t)0);
+
+        if (m_consoleCallback != nullptr)
+        {
+            if (!m_calledConsoleCallback)
+            {
+                m_calledConsoleCallback = true;
+                m_consoleCallback();
+            }
+        }
+        else
+#endif
+        {
+            printf("\n");
+        }
+    }
 
     void printError(lua_State* state) override
     {
@@ -1108,8 +1238,43 @@ public:
         cb->interrupt = nullptr;
     }
 
+#ifdef WITH_RIVE_TOOLS
+    // Console buffer access for editor
+    Span<uint8_t> consoleMemory() { return m_consoleBuffer.memory(); }
+
+    void clearConsole()
+    {
+        m_consoleBuffer.clear();
+        m_calledConsoleCallback = false;
+    }
+
+    bool hasConsoleCallback() const { return m_consoleCallback != nullptr; }
+#endif
+
 private:
     int m_timeoutMs = 200;
+#ifdef WITH_RIVE_TOOLS
+    ConsoleCallback m_consoleCallback = nullptr;
+    VectorBinaryStream m_consoleBuffer;
+    bool m_calledConsoleCallback = false;
+#endif
+};
+
+class ScriptedDataContext
+{
+public:
+    ScriptedDataContext(lua_State* L, rcp<DataContext> dataContext);
+    static constexpr uint8_t luaTag = LUA_T_COUNT + 36;
+    static constexpr const char* luaName = "DataContext";
+    static constexpr bool hasMetatable = true;
+    int pushViewModel();
+    int pushParent();
+
+    const lua_State* state() const { return m_state; }
+
+private:
+    lua_State* m_state = nullptr;
+    rcp<DataContext> m_dataContext = nullptr;
 };
 
 static void interruptCPP(lua_State* L, int gc)

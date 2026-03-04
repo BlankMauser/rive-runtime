@@ -460,11 +460,14 @@ StatusCode Artboard::initialize()
     DependencySorter sorter;
     std::vector<Component*> drawTargetOrder;
     sorter.sort(&root, drawTargetOrder);
-    auto itr = drawTargetOrder.begin();
-    itr++;
-    while (itr != drawTargetOrder.end())
+    if (drawTargetOrder.size() > 0)
     {
-        m_DrawTargets.push_back(static_cast<DrawTarget*>(*itr++));
+        auto itr = drawTargetOrder.begin();
+        itr++;
+        while (itr != drawTargetOrder.end())
+        {
+            m_DrawTargets.push_back(static_cast<DrawTarget*>(*itr++));
+        }
     }
     initScriptedObjects();
     return StatusCode::Ok;
@@ -869,6 +872,7 @@ void Artboard::cloneObjectDataBinds(const Core* object,
 }
 void Artboard::host(ArtboardHost* artboardHost)
 {
+    addedToHost();
     m_host = artboardHost;
 #ifdef WITH_RIVE_LAYOUT
     if (!sharesLayoutWithHost())
@@ -1792,7 +1796,7 @@ StatusCode Artboard::import(ImportStack& importStack)
     return result;
 }
 
-void Artboard::internalDataContext(DataContext* value)
+void Artboard::internalDataContext(rcp<DataContext> value)
 {
     m_DataContext = value;
     for (auto artboardHost : m_ArtboardHosts)
@@ -1808,7 +1812,7 @@ void Artboard::internalDataContext(DataContext* value)
             artboardHost->internalDataContext(m_DataContext);
         }
     }
-    bindDataBindsFromContext(m_DataContext);
+    bindDataBindsFromContext(m_DataContext.get());
     sortDataBinds();
     initScriptedObjects();
 }
@@ -1829,14 +1833,12 @@ void Artboard::clearDataContext()
 {
     if (m_DataContext)
     {
-        if (m_ownsDataContext)
+        if (m_DataContext->viewModelInstance())
         {
             m_DataContext->viewModelInstance()->removeDependent(this);
-            delete m_DataContext;
         }
         m_DataContext = nullptr;
     }
-    m_ownsDataContext = false;
     for (auto artboardHost : m_ArtboardHosts)
     {
         artboardHost->clearDataContext();
@@ -1860,7 +1862,10 @@ void Artboard::volume(float value)
     }
 }
 
-void Artboard::dataContext(DataContext* value) { internalDataContext(value); }
+void Artboard::dataContext(rcp<DataContext> value)
+{
+    internalDataContext(value);
+}
 
 void Artboard::bindViewModelInstance(rcp<ViewModelInstance> viewModelInstance)
 {
@@ -1868,7 +1873,7 @@ void Artboard::bindViewModelInstance(rcp<ViewModelInstance> viewModelInstance)
 }
 
 void Artboard::bindViewModelInstance(rcp<ViewModelInstance> viewModelInstance,
-                                     DataContext* parent)
+                                     rcp<DataContext> parent)
 {
     if (viewModelInstance == nullptr)
     {
@@ -1876,8 +1881,7 @@ void Artboard::bindViewModelInstance(rcp<ViewModelInstance> viewModelInstance,
         return;
     }
     clearDataContext();
-    m_ownsDataContext = true;
-    auto dataContext = new DataContext(viewModelInstance);
+    auto dataContext = make_rcp<DataContext>(viewModelInstance);
     if (dataContext->viewModelInstance())
     {
         dataContext->viewModelInstance()->addDependent(this);

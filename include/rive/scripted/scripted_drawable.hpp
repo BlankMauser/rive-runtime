@@ -21,7 +21,7 @@ class ScriptedDrawable : public ScriptedDrawableBase,
 {
 public:
 #ifdef WITH_RIVE_SCRIPTING
-    bool scriptInit(lua_State* state) override;
+    bool scriptInit(ScriptingVM* vm) override;
 #endif
     void draw(Renderer* renderer) override;
     void update(ComponentDirt value) override;
@@ -39,7 +39,7 @@ public:
     }
     void addProperty(CustomProperty* prop) override;
     bool addScriptedDirt(ComponentDirt value, bool recurse = false) override;
-    DataContext* dataContext() override
+    rcp<DataContext> dataContext() override
     {
         if (artboard() != nullptr)
         {

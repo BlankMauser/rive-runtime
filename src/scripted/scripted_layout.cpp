@@ -8,9 +8,9 @@
 using namespace rive;
 
 #ifdef WITH_RIVE_SCRIPTING
-bool ScriptedLayout::scriptInit(lua_State* state)
+bool ScriptedLayout::scriptInit(ScriptingVM* vm)
 {
-    ScriptedDrawable::scriptInit(state);
+    ScriptedDrawable::scriptInit(vm);
     if (parent() != nullptr && parent()->is<LayoutComponent>())
     {
         parent()->as<LayoutComponent>()->markLayoutNodeDirty(true);
@@ -20,28 +20,28 @@ bool ScriptedLayout::scriptInit(lua_State* state)
 
 void ScriptedLayout::callScriptedResize(Vec2D size)
 {
-    if (m_state == nullptr)
+    if (!resizes() || m_vm == nullptr)
     {
         return;
     }
-    rive_lua_pushRef(m_state, m_self);
-    if (static_cast<lua_Type>(lua_getfield(m_state, -1, "resize")) !=
-        LUA_TFUNCTION)
+    lua_State* L = state();
+    // Stack: []
+    rive_lua_pushRef(L, m_self);
+    // Stack: [self]
+    lua_getfield(L, -1, "resize");
+    // Stack: [self, function]
+    lua_pushvalue(L, -2);
+    // Stack: [self, function, self]
+    lua_pushvec2d(L, size);
+    // Stack: [self, function, self, size]
+    if (static_cast<lua_Status>(rive_lua_pcall(L, 2, 0)) != LUA_OK)
     {
-        fprintf(stderr, "expected resize to be a function\n");
-        rive_lua_pop(m_state, 1);
+        // Stack: [self, status]
+        fprintf(stderr, "resize failed\n");
+        rive_lua_pop(L, 1);
     }
-    else
-    {
-        lua_pushvalue(m_state, -2);
-        lua_pushvec2d(m_state, size);
-        if (static_cast<lua_Status>(rive_lua_pcall(m_state, 2, 0)) != LUA_OK)
-        {
-            fprintf(stderr, "resize failed\n");
-            rive_lua_pop(m_state, 1);
-        }
-    }
-    rive_lua_pop(m_state, 1);
+    // Stack: [self]
+    rive_lua_pop(L, 1);
 }
 
 Vec2D ScriptedLayout::measureLayout(float width,
@@ -49,42 +49,40 @@ Vec2D ScriptedLayout::measureLayout(float width,
                                     float height,
                                     LayoutMeasureMode heightMode)
 {
-    if (!measures() || m_state == nullptr)
+    if (!measures() || m_vm == nullptr)
     {
         return Vec2D(0, 0);
     }
+    lua_State* L = state();
     auto measuredWidth = std::numeric_limits<float>::max();
     auto measuredHeight = std::numeric_limits<float>::max();
-    rive_lua_pushRef(m_state, m_self);
-    if (static_cast<lua_Type>(lua_getfield(m_state, -1, "measure")) !=
-        LUA_TFUNCTION)
+    // Stack: []
+    rive_lua_pushRef(L, m_self);
+    // Stack: [self]
+    lua_getfield(L, -1, "measure");
+    // Stack: [self, field]
+    lua_pushvalue(L, -2);
+    // Stack: [self, field, self]
+    if (static_cast<lua_Status>(rive_lua_pcall(L, 1, 1)) != LUA_OK)
     {
-        fprintf(stderr, "expected measure to be a function\n");
-        rive_lua_pop(m_state, 1);
+
+        fprintf(stderr, "measure failed\n");
     }
     else
     {
-        lua_pushvalue(m_state, -2);
-        if (static_cast<lua_Status>(rive_lua_pcall(m_state, 1, 1)) != LUA_OK)
+        if (static_cast<lua_Type>(lua_type(L, -1)) != LUA_TVECTOR)
         {
-            fprintf(stderr, "measure failed\n");
+            fprintf(stderr, "expected measure to return a Vec2D\n");
         }
         else
         {
-            if (static_cast<lua_Type>(lua_type(m_state, -1)) != LUA_TVECTOR)
-            {
-                fprintf(stderr, "expected measure to return a Vec2D\n");
-            }
-            else
-            {
-                auto size = lua_tovec2d(m_state, -1);
-                measuredWidth = size->x;
-                measuredHeight = size->y;
-            }
+            auto size = lua_tovec2d(L, -1);
+            measuredWidth = size->x;
+            measuredHeight = size->y;
         }
-        rive_lua_pop(m_state, 1);
     }
-    rive_lua_pop(m_state, 1);
+    // Stack: [self, status] or Stack: [self, result]
+    rive_lua_pop(L, 2);
 
     return Vec2D(std::min((widthMode == LayoutMeasureMode::undefined
                                ? std::numeric_limits<float>::max()

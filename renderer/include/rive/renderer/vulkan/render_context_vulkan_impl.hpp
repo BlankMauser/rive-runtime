@@ -25,6 +25,14 @@ public:
     struct ContextOptions
     {
         bool forceAtomicMode = false;
+
+        // Dithering does better when we evaluate our blend equations in medium
+        // precision from the fragment shader, vs letting it happen in the blend
+        // unit (which, presumably, must be lower precision). For this reason,
+        // an app may wish to disable "fixed function" rendering for clockwise
+        // mode.
+        bool disableClockwiseFixedFunctionMode = false;
+
         ShaderCompilationMode shaderCompilationMode =
             ShaderCompilationMode::standard;
     };
@@ -82,6 +90,8 @@ private:
         gpu::InterlockMode,
         const RenderTarget*,
         const IAABB& renderTargetUpdateBounds,
+        uint32_t virtualTileWidth,
+        uint32_t virtualTileHeight,
         gpu::DrawContents combinedDrawContents) const override;
 
     void prepareToFlush(uint64_t nextFrameNumber,
@@ -151,6 +161,7 @@ private:
     vkutil::ImageView* plsTransientCoverageView();
     vkutil::ImageView* plsTransientClipView();
     vkutil::Texture2D* plsTransientScratchColorTexture();
+    vkutil::ImageView* plsTransientScratchColorView_RGB10_A2();
 
     // The offscreen color texture is not transient and supports PLS. It is used
     // in place of the renderTarget (via copying in and out) when the
@@ -185,15 +196,110 @@ private:
         VkDescriptorPool m_vkDescriptorPool;
     };
 
-    const DrawPipelineLayoutVulkan& beginDrawRenderPass(
-        const FlushDescriptor& desc,
-        RenderPassOptionsVulkan,
-        const IAABB& drawBounds,
-        VkImageView colorImageView,
-        VkImageView msaaColorSeedImageView,
-        VkImageView msaaResolveImageView);
+    // Pool of DescriptorSetPool instances.
+    class DescriptorSetPoolPool : public GPUResourcePool
+    {
+    public:
+        constexpr static size_t MAX_POOL_SIZE = 64;
+        DescriptorSetPoolPool(rcp<GPUResourceManager> manager) :
+            GPUResourcePool(std::move(manager), MAX_POOL_SIZE)
+        {}
+
+        rcp<DescriptorSetPool> acquire();
+    };
+
+    // High-level allocator of VkDescriptorSets. These are intended to be scoped
+    // to a single flush.
+    class DescriptorSetAllocator
+    {
+    public:
+        DescriptorSetAllocator(RenderContextVulkanImpl*);
+        ~DescriptorSetAllocator();
+
+        const VkDescriptorSet& perFlushDescriptorSet() const
+        {
+            return m_perFlushDescriptorSet;
+        }
+
+        VkDescriptorSet allocatePerDrawDescriptorSet();
+        VkDescriptorSet allocateDescriptorSet(VkDescriptorSetLayout);
+
+    private:
+        const rcp<DescriptorSetPoolPool> m_descriptorSetPoolPool;
+        rcp<DescriptorSetPool> m_descriptorSetPool;
+        const VkDescriptorSet m_perFlushDescriptorSet;
+        const VkDescriptorSetLayout m_perDrawDescriptorSetLayout;
+        // Image textures are the only binding that can be updated multiple
+        // times per flush, and a VkDescriptorSetPool can only update a fixed
+        // number of image bindings, so we track this in order to know when it's
+        // time to allocate a new pool.
+        uint32_t m_imageTextureUpdateCount = 0;
+    };
+
+    // Encapsulates state for the main "draw" render pass, providing mechanisms
+    // to restart and interrupt if needed.
+    class DrawRenderPass
+    {
+    public:
+        DrawRenderPass(RenderContextVulkanImpl*,
+                       const FlushDescriptor&,
+                       gpu::LoadAction overrideColorLoadAction,
+                       const IAABB& drawBounds,
+                       VkImageView colorImageView,
+                       VkImageView msaaColorSeedImageView,
+                       VkImageView msaaResolveImageView,
+                       RenderPassOptionsVulkan,
+                       const IAABB& scissor);
+
+        const DrawPipelineLayoutVulkan& pipelineLayout() const
+        {
+            return m_pipelineLayout;
+        }
+
+        RenderPassOptionsVulkan renderPassOptions() const
+        {
+            return m_renderPassOptions;
+        }
+
+        // Ends the current render pass and starts a new one with the given
+        // properties.
+        void restart(gpu::LoadAction colorLoadAction,
+                     RenderPassOptionsVulkan renderPassOptions,
+                     const IAABB& scissor);
+
+        // Some early Android tilers are known to crash when a render pass is
+        // too complex. This is a mechanism to interrupt and begin a new render
+        // pass on affected devices after a pre-set, internal complexity is
+        // reached.
+        void interruptIfNeeded(uint32_t nextTessPatchCount,
+                               uint32_t pendingTessPatchCount);
+
+    private:
+        const DrawPipelineLayoutVulkan& begin(
+            gpu::LoadAction overrideColorLoadAction,
+            RenderPassOptionsVulkan,
+            const IAABB& scissor);
+
+        RenderContextVulkanImpl* const m_impl;
+        const FlushDescriptor& m_desc;
+        const IAABB m_drawBounds;
+        const VkImageView m_colorImageView;
+        const VkImageView m_msaaColorSeedImageView;
+        const VkImageView m_msaaResolveImageView;
+        const DrawPipelineLayoutVulkan& m_pipelineLayout;
+
+        // Initialized by beginDrawRenderPass().
+        RenderPassOptionsVulkan m_renderPassOptions;
+        IAABB m_scissor;
+        uint32_t m_patchCountInCurrentDrawPass;
+    };
 
     void flush(const FlushDescriptor&) override;
+
+    void submitDrawList(const FlushDescriptor&,
+                        DescriptorSetAllocator*,
+                        DrawRenderPass*,
+                        uint32_t pendingTessPatchCount);
 
     void postFlush(const RenderContext::FlushResources&) override;
 
@@ -292,6 +398,7 @@ private:
     rcp<vkutil::ImageView> m_plsTransientCoverageView;
     rcp<vkutil::ImageView> m_plsTransientClipView;
     rcp<vkutil::Texture2D> m_plsTransientScratchColorTexture;
+    rcp<vkutil::ImageView> m_plsTransientScratchColorView_RGB10_A2;
     rcp<vkutil::Texture2D> m_plsOffscreenColorTexture;
     rcp<vkutil::Texture2D> m_plsAtomicCoverageTexture;
 
@@ -305,18 +412,6 @@ private:
     rcp<vkutil::Buffer> m_pathPatchIndexBuffer;
     rcp<vkutil::Buffer> m_imageRectVertexBuffer;
     rcp<vkutil::Buffer> m_imageRectIndexBuffer;
-
-    // Pool of DescriptorSetPool instances for flushing.
-    class DescriptorSetPoolPool : public GPUResourcePool
-    {
-    public:
-        constexpr static size_t MAX_POOL_SIZE = 64;
-        DescriptorSetPoolPool(rcp<GPUResourceManager> manager) :
-            GPUResourcePool(std::move(manager), MAX_POOL_SIZE)
-        {}
-
-        rcp<DescriptorSetPool> acquire();
-    };
 
     rcp<DescriptorSetPoolPool> m_descriptorSetPoolPool;
 

@@ -341,7 +341,15 @@ static void key_callback(GLFWwindow* window,
                 clockwiseFill = !clockwiseFill;
                 break;
             case GLFW_KEY_P:
-                paused = !paused;
+                if (!shift)
+                {
+                    paused = !paused;
+                }
+                else
+                {
+                    RIVE_PROF_TOGGLEDRAW();
+                }
+
                 break;
             case GLFW_KEY_H:
                 if (!shift)
@@ -426,6 +434,8 @@ int main(int argc, const char** argv)
     // Cause stdout and stderr to print immediately without buffering.
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+    RIVE_PROF_INIT()
 
 #ifdef DEBUG
     options.enableVulkanCoreValidationLayers = true;
@@ -544,6 +554,12 @@ int main(int argc, const char** argv)
         {
             api = API::vulkan;
             clockwiseFill = true;
+        }
+        else if (!strcmp(argv[i], "--vkcwa"))
+        {
+            api = API::vulkan;
+            clockwiseFill = true;
+            forceAtomicMode = true;
         }
         else if (!strcmp(argv[i], "--vulkanatomic") ||
                  !strcmp(argv[i], "--vkatomic"))

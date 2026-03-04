@@ -227,11 +227,28 @@ TransitionViewModelCondition::~TransitionViewModelCondition()
     }
 }
 
+bool TransitionViewModelCondition::canEvaluate(
+    const StateMachineInstance* stateMachineInstance) const
+{
+    if (leftComparator() &&
+        leftComparator()->is<TransitionPropertyArtboardComparator>() &&
+        rightComparator() &&
+        rightComparator()->is<TransitionValueNumberComparator>())
+    {
+        return true;
+    }
+    if (stateMachineInstance->dataContext())
+    {
+        return true;
+    }
+    return false;
+}
+
 bool TransitionViewModelCondition::evaluate(
     const StateMachineInstance* stateMachineInstance,
     StateMachineLayerInstance* layerInstance) const
 {
-    if (stateMachineInstance->dataContext())
+    if (canEvaluate(stateMachineInstance))
     {
         return m_comparison->compare(stateMachineInstance, layerInstance);
     }
@@ -285,6 +302,11 @@ void TransitionViewModelCondition::initialize()
                     rightComparator()
                         ->as<TransitionPropertyViewModelComparator>()
                         ->bindableProperty();
+                if (rightBindableProperty == nullptr)
+                {
+                    m_comparison = new ConditionComparisonNone();
+                    return;
+                }
                 if (rightBindableProperty->is<BindablePropertyNumber>())
                 {
                     auto leftComparand =
@@ -328,6 +350,11 @@ void TransitionViewModelCondition::initialize()
             leftComparator()
                 ->as<TransitionPropertyViewModelComparator>()
                 ->bindableProperty();
+        if (leftBindableProperty == nullptr)
+        {
+            m_comparison = new ConditionComparisonNone();
+            return;
+        }
         if (rightComparator()->is<TransitionSelfComparator>())
         {
             m_comparison = new ConditionComparisonSelf(leftBindableProperty);
@@ -344,6 +371,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyNumber>())
                     {
                         auto leftComparand =
@@ -404,6 +435,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyBoolean>())
                     {
                         auto leftComparand =
@@ -446,6 +481,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyString>())
                     {
                         auto leftComparand =
@@ -488,6 +527,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyColor>())
                     {
                         auto leftComparand =
@@ -530,6 +573,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyEnum>())
                     {
                         auto leftComparand = new ConditionComparandEnumBindable(
@@ -567,6 +614,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyTrigger>())
                     {
                         auto leftComparand =
@@ -602,6 +653,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyInteger>())
                     {
                         auto leftComparand =
@@ -663,6 +718,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyAsset>())
                     {
                         auto leftComparand =
@@ -705,6 +764,10 @@ void TransitionViewModelCondition::initialize()
                         rightComparator()
                             ->as<TransitionPropertyViewModelComparator>()
                             ->bindableProperty();
+                    if (rightBindableProperty == nullptr)
+                    {
+                        break;
+                    }
                     if (rightBindableProperty->is<BindablePropertyArtboard>())
                     {
                         auto leftComparand =

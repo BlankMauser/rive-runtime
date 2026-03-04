@@ -309,8 +309,8 @@ PLS_BLOCK_BEGIN
 // render to it as a normal color attachment.
 #ifndef @FIXED_FUNCTION_COLOR_OUTPUT
 #ifdef @COLOR_PLANE_IDX_OVERRIDE
-// D3D11 doesn't let us bind the framebuffer UAV to slot 0 when there is a color
-// output.
+// D3D11 doesn't let us bind the framebuffer UAV to slot 0 when there is a
+// color output.
 #define LOCAL_COLOR_PLANE_IDX @COLOR_PLANE_IDX_OVERRIDE
 #else
 #define LOCAL_COLOR_PLANE_IDX COLOR_PLANE_IDX
@@ -321,11 +321,11 @@ PLS_DECL4F_READONLY(LOCAL_COLOR_PLANE_IDX, colorBuffer);
 PLS_DECL4F(LOCAL_COLOR_PLANE_IDX, colorBuffer);
 #endif
 #endif // !FIXED_FUNCTION_COLOR_OUTPUT
-#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
-// When PLS has src-over blending enabled, the clip buffer is RGBA8 so we can
-// preserve clip contents by emitting a=0 instead of loading the current value.
-// This is also is a hint to the hardware that it doesn't need to write anything
-// to the clip attachment.
+#ifdef @PLS_BLEND_SRC_OVER
+// When PLS has src-over blending enabled, the clip buffer is RGBA8 so we
+// can preserve clip contents by emitting a=0 instead of loading the current
+// value. This is also is a hint to the hardware that it doesn't need to
+// write anything to the clip attachment.
 #define CLIP_VALUE_TYPE half4
 #define PLS_LOAD_CLIP_TYPE PLS_LOAD4F
 #define MAKE_NON_UPDATING_CLIP_VALUE make_half4(.0)
@@ -338,8 +338,8 @@ PLS_DECL4F_READONLY(CLIP_PLANE_IDX, clipBuffer);
 #endif
 #endif // ENABLE_CLIPPING
 #else
-// When PLS does not have src-over blending, the clip buffer the usual packed
-// R32UI.
+// When PLS does not have src-over blending, the clip buffer the usual
+// packed R32UI.
 #define CLIP_VALUE_TYPE uint
 #define MAKE_NON_UPDATING_CLIP_VALUE 0u
 #define PLS_LOAD_CLIP_TYPE PLS_LOADUI
@@ -366,6 +366,18 @@ INLINE half from_fixed(uint x)
     return cast_float_to_half(
         float(x) * FIXED_COVERAGE_INVERSE_PRECISION +
         (-FIXED_COVERAGE_ZERO * FIXED_COVERAGE_INVERSE_PRECISION));
+}
+
+ushort apply_driver_workaround_for_path_id(ushort pathID)
+{
+#ifdef @NEEDS_PATH_ID_CLAMP_WORKAROUND
+    // We have observed that on some hardware, inactive threads or helper lanes
+    // appear to issue calls that access storage textures, even though they
+    // should be NO-OP. clamping the path ID prevents crashes in these
+    // scenarios.
+    pathID = min(pathID, uniforms.maxPathId);
+#endif
+    return pathID;
 }
 
 #ifdef @ENABLE_CLIPPING
@@ -498,12 +510,7 @@ INLINE void resolve_paint(uint pathID,
     }
 #endif // !FIXED_FUNCTION_COLOR_OUTPUT && ENABLE_ADVANCED_BLEND
 
-    // When PLS_BLEND_SRC_OVER is defined, the caller and/or blend state
-    // multiply alpha into fragColorOut for us. Otherwise, we have to
-    // premultiply it.
-#ifndef @PLS_BLEND_SRC_OVER
     fragColorOut.rgb *= fragColorOut.a;
-#endif
 }
 
 #if !defined(@FIXED_FUNCTION_COLOR_OUTPUT) &&                                  \
@@ -519,7 +526,8 @@ INLINE void blend_pls_color_src_over(half4 fragColorOut PLS_CONTEXT_DECL)
 #endif
     PLS_STORE4F(colorBuffer, fragColorOut);
 }
-#endif // !@FIXED_FUNCTION_COLOR_OUTPUT && !@COALESCED_PLS_RESOLVE_AND_TRANSFER
+#endif // !@FIXED_FUNCTION_COLOR_OUTPUT &&
+       // !@COALESCED_PLS_RESOLVE_AND_TRANSFER
 
 #if defined(@ENABLE_CLIPPING) && !defined(@RESOLVE_PLS)
 INLINE void emit_pls_clip(CLIP_VALUE_TYPE fragClipOut PLS_CONTEXT_DECL)
@@ -555,6 +563,7 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
     VARYING_UNPACK(v_pathID, ushort);
 
     half fragmentCoverage;
+
 #ifdef @ENABLE_FEATHER
     if (@ENABLE_FEATHER && is_feathered_stroke(v_coverages))
     {
@@ -598,6 +607,9 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
         PLS_ATOMIC_MAX(coverageAtomicBuffer, minCoverageData);
     ushort lastPathID =
         cast_uint_to_ushort(lastCoverageData >> FIXED_COVERAGE_BIT_COUNT);
+
+    lastPathID = apply_driver_workaround_for_path_id(lastPathID);
+
     if (lastPathID == v_pathID)
     {
         // This is not the first fragment of the current path to touch this
@@ -630,6 +642,10 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
                           FRAGMENT_CONTEXT_UNPACK PLS_CONTEXT_UNPACK);
     }
 
+    fragColorOut.rgb = add_dither(fragColorOut.rgb,
+                                  _fragCoord.xy,
+                                  uniforms.ditherScale,
+                                  uniforms.ditherBias);
 #ifdef @FIXED_FUNCTION_COLOR_OUTPUT
     _fragColor = fragColorOut;
 #else
@@ -656,7 +672,7 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
     uint lastCoverageData = PLS_LOADUI_ATOMIC(coverageAtomicBuffer);
     ushort lastPathID =
         cast_uint_to_ushort(lastCoverageData >> FIXED_COVERAGE_BIT_COUNT);
-
+    lastPathID = apply_driver_workaround_for_path_id(lastPathID);
     // Update coverageAtomicBuffer with the coverage weight of the current
     // triangle. This does not need to be atomic since interior triangles don't
     // overlap.
@@ -712,6 +728,10 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
                           FRAGMENT_CONTEXT_UNPACK PLS_CONTEXT_UNPACK);
     }
 
+    fragColorOut.rgb = add_dither(fragColorOut.rgb,
+                                  _fragCoord.xy,
+                                  uniforms.ditherScale,
+                                  uniforms.ditherBias);
 #ifdef @FIXED_FUNCTION_COLOR_OUTPUT
     _fragColor = fragColorOut;
 #else
@@ -759,6 +779,7 @@ ATOMIC_PLS_MAIN_WITH_IMAGE_UNIFORMS(@drawFragmentMain)
     uint lastCoverageData = PLS_LOADUI_ATOMIC(coverageAtomicBuffer);
     ushort lastPathID =
         cast_uint_to_ushort(lastCoverageData >> FIXED_COVERAGE_BIT_COUNT);
+    lastPathID = apply_driver_workaround_for_path_id(lastPathID);
     half lastCoverageCount = from_fixed(lastCoverageData & FIXED_COVERAGE_MASK);
     half4 fragColorOut;
 #ifdef @ENABLE_CLIPPING
@@ -778,14 +799,8 @@ ATOMIC_PLS_MAIN_WITH_IMAGE_UNIFORMS(@drawFragmentMain)
 #endif
                       FRAGMENT_CONTEXT_UNPACK PLS_CONTEXT_UNPACK);
 
-#ifdef @PLS_BLEND_SRC_OVER
-    // Image draws use a premultiplied blend state, but resolve_paint() did not
-    // premultiply fragColorOut. Multiply fragColorOut by alpha now.
-    fragColorOut.rgb *= fragColorOut.a;
-#endif
-
-    // Clip the image after resolving the previous path, since that can affect
-    // the clip buffer.
+// Clip the image after resolving the previous path, since that can affect
+// the clip buffer.
 #ifdef @ENABLE_CLIPPING // TODO! ENABLE_IMAGE_CLIPPING in addition to
                         // ENABLE_CLIPPING?
     if (@ENABLE_CLIPPING && imageDrawUniforms.clipID != 0u)
@@ -797,7 +812,7 @@ ATOMIC_PLS_MAIN_WITH_IMAGE_UNIFORMS(@drawFragmentMain)
     }
 #endif // ENABLE_CLIPPING
 
-    // Prepare imageColor for premultiplied src-over blending.
+// Prepare imageColor for premultiplied src-over blending.
 #if !defined(@FIXED_FUNCTION_COLOR_OUTPUT) && defined(@ENABLE_ADVANCED_BLEND)
     if (@ENABLE_ADVANCED_BLEND && imageDrawUniforms.blendMode != BLEND_SRC_OVER)
     {
@@ -820,6 +835,10 @@ ATOMIC_PLS_MAIN_WITH_IMAGE_UNIFORMS(@drawFragmentMain)
     // blending pipeline.
     fragColorOut = fragColorOut * (1. - imageColor.a) + imageColor;
 
+    fragColorOut.rgb = add_dither(fragColorOut.rgb,
+                                  _fragCoord.xy,
+                                  uniforms.ditherScale,
+                                  uniforms.ditherBias);
 #ifdef @FIXED_FUNCTION_COLOR_OUTPUT
     _fragColor = fragColorOut;
 #else
@@ -879,35 +898,36 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
     half coverageCount = from_fixed(lastCoverageData & FIXED_COVERAGE_MASK);
     ushort lastPathID =
         cast_uint_to_ushort(lastCoverageData >> FIXED_COVERAGE_BIT_COUNT);
+    lastPathID = apply_driver_workaround_for_path_id(lastPathID);
     half4 fragColorOut;
     resolve_paint(lastPathID,
                   coverageCount,
                   fragColorOut FRAGMENT_CONTEXT_UNPACK PLS_CONTEXT_UNPACK);
-    // Certain platforms give us less control of the format of what we are
-    // rendering too. Specifically, we are auto converted from linear -> sRGB on
-    // render target writes in unreal. In those cases we made need to end up in
-    // linear color space
+// Certain platforms give us less control of the format of what we are
+// rendering too. Specifically, we are auto converted from linear -> sRGB on
+// render target writes in unreal. In those cases we made need to end up in
+// linear color space
 #ifdef @NEEDS_GAMMA_CORRECTION
     fragColorOut = gamma_to_linear(fragColorOut);
 #endif
 #ifdef @COALESCED_PLS_RESOLVE_AND_TRANSFER
-#ifdef @PLS_BLEND_SRC_OVER
-    // When PLS_BLEND_SRC_OVER is defined, the blend state usually multiplies
-    // alpha into fragColorOut for us. But since the coalesced resolve does not
-    // use blend, premultiply it now.
-    fragColorOut.rgb *= fragColorOut.a;
-#endif
     float oneMinusSrcAlpha = 1. - fragColorOut.a;
     if (oneMinusSrcAlpha != .0)
         fragColorOut += PLS_LOAD4F(colorBuffer) * oneMinusSrcAlpha;
     _fragColor = fragColorOut;
     EMIT_PLS_AND_FRAG_COLOR
 #else
+
+    fragColorOut.rgb = add_dither(fragColorOut.rgb,
+                                  _fragCoord.xy,
+                                  uniforms.ditherScale,
+                                  uniforms.ditherBias);
 #ifdef @FIXED_FUNCTION_COLOR_OUTPUT
     _fragColor = fragColorOut;
 #else
     blend_pls_color_src_over(fragColorOut PLS_CONTEXT_UNPACK);
 #endif
+
     EMIT_ATOMIC_PLS
 #endif // COALESCED_PLS_RESOLVE_AND_TRANSFER
 }

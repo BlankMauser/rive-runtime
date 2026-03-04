@@ -201,8 +201,7 @@ std::unique_ptr<D3D12Pipeline> D3D12PipelineManager::linkPipeline(
 
     D3D12_BLEND_DESC blendDesc{};
     blendDesc.RenderTarget[0].BlendEnable =
-        props.shaderMiscFlags & (ShaderMiscFlags::fixedFunctionColorOutput |
-                                 ShaderMiscFlags::coalescedResolveAndTransfer);
+        props.shaderMiscFlags & ShaderMiscFlags::fixedFunctionColorOutput;
     blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
     blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
     blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
@@ -445,6 +444,7 @@ void D3D12PipelineManager::compileAtlasPipeline()
 
     psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
     psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
     psoDesc.PS = {shader::atlas::fill::g_main,
                   std::size(shader::atlas::fill::g_main)};

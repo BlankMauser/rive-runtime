@@ -1,12 +1,12 @@
 #ifndef _RIVE_SCRIPT_ASSET_HPP_
 #define _RIVE_SCRIPT_ASSET_HPP_
-#ifdef WITH_RIVE_SCRIPTING
-#include "rive/lua/rive_lua_libs.hpp"
-#endif
 #include "rive/file.hpp"
 #include "rive/generated/assets/script_asset_base.hpp"
 #include "rive/simple_array.hpp"
 #include <stdio.h>
+#ifdef WITH_RIVE_SCRIPTING
+#include <unordered_set>
+#endif
 
 #ifdef WITH_RIVE_SCRIPTING
 struct lua_State;
@@ -18,6 +18,7 @@ class Artboard;
 class Component;
 class DataBind;
 class ScriptedObject;
+class ScriptingVM;
 
 enum ScriptProtocol
 {
@@ -25,7 +26,9 @@ enum ScriptProtocol
     node,
     layout,
     converter,
-    pathEffect
+    pathEffect,
+    listenerAction,
+    transitionCondition
 };
 
 #ifdef WITH_RIVE_SCRIPTING
@@ -37,14 +40,19 @@ class ScriptInput
 protected:
     ScriptedObject* m_scriptedObject = nullptr;
     DataBind* m_dataBind = nullptr;
+    bool m_ownsDataBind = false;
 
 public:
-    virtual ~ScriptInput() {};
+    virtual ~ScriptInput();
     virtual void initScriptedValue();
     virtual bool validateForScriptInit() = 0;
     static ScriptInput* from(Core* component);
     DataBind* dataBind() { return m_dataBind; }
-    void dataBind(DataBind* dataBind) { m_dataBind = dataBind; }
+    void dataBind(DataBind* dataBind, bool ownsDataBind = false)
+    {
+        m_dataBind = dataBind;
+        m_ownsDataBind = ownsDataBind;
+    }
     ScriptedObject* scriptedObject() { return m_scriptedObject; }
     void scriptedObject(ScriptedObject* object) { m_scriptedObject = object; }
 };
@@ -64,6 +72,7 @@ private:
     static const int m_initsBit = 1 << 9;
     static const int m_dataConvertsBit = 1 << 10;
     static const int m_dataReverseConvertsBit = 1 << 11;
+    static const int m_resizesBit = 1 << 12;
 
     int m_implementedMethods = 0;
 
@@ -88,6 +97,7 @@ public:
     bool advances() { return (m_implementedMethods & m_advancesBit) != 0; }
     bool updates() { return (m_implementedMethods & m_updatesBit) != 0; }
     bool measures() { return (m_implementedMethods & m_measuresBit) != 0; }
+    bool resizes() { return (m_implementedMethods & m_resizesBit) != 0; }
     bool wantsPointerDown()
     {
         return (m_implementedMethods & m_wantsPointerDownBit) != 0;
@@ -177,6 +187,7 @@ public:
     void file(File* value) { m_file = value; }
     File* file() const { return m_file; }
 #ifdef WITH_RIVE_SCRIPTING
+    ScriptingVM* scriptingVM();
     lua_State* vm();
     void registrationComplete(int ref) override;
 #endif

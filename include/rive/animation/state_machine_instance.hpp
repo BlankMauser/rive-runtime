@@ -40,6 +40,7 @@ class DataBind;
 class BindableProperty;
 class HitDrawable;
 class ListenerViewModel;
+class ScriptedListenerAction;
 typedef void (*DataBindChanged)();
 
 #ifdef WITH_RIVE_TOOLS
@@ -78,8 +79,7 @@ private:
         StateInstance* stateFromInstance,
         StateMachineLayerInstance* layerInstance);
 
-    bool m_ownsDataContext = false;
-    DataContext* m_DataContext = nullptr;
+    rcp<DataContext> m_DataContext = nullptr;
     void addToHitLookup(Component* target,
                         bool isLayoutComponent,
                         std::unordered_map<Component*, HitDrawable*>& hitLookup,
@@ -114,8 +114,9 @@ public:
     SMITrigger* getTrigger(const std::string& name) const override;
     void bindViewModelInstance(
         rcp<ViewModelInstance> viewModelInstance) override;
-    void dataContext(DataContext* dataContext);
-    DataContext* dataContext() const { return m_DataContext; }
+    void bindDataContext(rcp<DataContext> dataContext);
+    void dataContext(rcp<DataContext> dataContext);
+    rcp<DataContext> dataContext() const { return m_DataContext; }
     void rebind() override;
 
     size_t currentAnimationCount() const;
@@ -204,7 +205,8 @@ public:
         BindableProperty* bindableProperty) const;
     bool hasListeners() { return m_hitComponents.size() > 0; }
     void clearDataContext();
-    void internalDataContext(DataContext* dataContext);
+    void internalDataContext(rcp<DataContext> dataContext);
+    ScriptedObject* scriptedObject(const ScriptedObject*) const;
 #ifdef TESTING
     size_t hitComponentsCount() { return m_hitComponents.size(); };
     HitComponent* hitComponent(size_t index)
@@ -238,6 +240,8 @@ private:
     std::vector<ListenerViewModel*> m_reportingListenerViewModels;
     std::unordered_map<BindableProperty*, BindableProperty*>
         m_bindablePropertyInstances;
+    std::unordered_map<const ScriptedObject*, ScriptedObject*>
+        m_scriptedObjectsMap;
     std::unordered_map<BindableProperty*, DataBind*>
         m_bindableDataBindsToTarget;
     std::unordered_map<BindableProperty*, DataBind*>
@@ -245,6 +249,7 @@ private:
     uint8_t m_drawOrderChangeCounter = 0;
     void unbind();
     void removeEventListeners();
+    void initScriptedObjects();
 
 #ifdef WITH_RIVE_TOOLS
 public:

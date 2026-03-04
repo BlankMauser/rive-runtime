@@ -46,6 +46,15 @@ enum class ShaderCompilationMode
     standard = allowAsynchronous,
 };
 
+// Various types of ordered dithering we can add to reduce banding
+// https://en.wikipedia.org/wiki/Ordered_dithering
+// https://blog.demofox.org/2022/01/01/interleaved-gradient-noise-a-different-kind-of-low-discrepancy-sequence/
+enum class DitherMode
+{
+    none,
+    interleavedGradientNoise,
+};
+
 // Used as a key for complex gradients.
 class GradientContentKey
 {
@@ -104,6 +113,20 @@ public:
         uint32_t msaaSampleCount = 0;
         // Use atomic mode (preferred) or msaa instead of rasterOrdering.
         bool disableRasterOrdering = false;
+        DitherMode ditherMode = DitherMode::interleavedGradientNoise;
+
+        // If nonzero, frames are split up into virtual tiles of this size.
+        //
+        // As of now, each tile gets drawn in a separate render pass. The
+        // purpose of these virtual tiles, for now, is to break the frame up
+        // into smaller chunks so that Rive can be pre-empted by other rendering
+        // processes. This is only supported on Vulkan/non-msaa.
+        //
+        // TODO: We could also explore a different type of virtual tiling that
+        // reduces barriers in atomic mode, but that is not how this feature
+        // works currently.
+        uint32_t virtualTileWidth = 0;
+        uint32_t virtualTileHeight = 0;
 
         // Testing flags.
         bool wireframe = false;
@@ -359,7 +382,7 @@ private:
     // size would not change.
     void setResourceSizes(ResourceAllocationCounts, bool forceRealloc = false);
 
-    void mapResourceBuffers(const ResourceAllocationCounts&);
+    [[nodiscard]] bool mapResourceBuffers(const ResourceAllocationCounts&);
     void unmapResourceBuffers(const ResourceAllocationCounts&);
 
     // Returns the next coverage buffer prefix to use in a logical flush.
@@ -806,7 +829,7 @@ private:
         uint32_t m_currentContourID;
 
         // Atlas for offscreen feathering.
-        std::unique_ptr<skgpu::RectanizerSkyline> m_atlasRectanizer;
+        std::unique_ptr<rive::RectanizerSkyline> m_atlasRectanizer;
         uint32_t m_atlasMaxX = 0;
         uint32_t m_atlasMaxY = 0;
         std::vector<PathDraw*> m_pendingAtlasDraws;

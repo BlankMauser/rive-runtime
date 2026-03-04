@@ -8,6 +8,7 @@
 #include "rive/viewmodel/viewmodel_instance_symbol_list_index.hpp"
 #include "rive/world_transform_component.hpp"
 #include "rive/layout/layout_data.hpp"
+#include "rive/artboard_list_map_rule.hpp"
 
 using namespace rive;
 
@@ -26,6 +27,8 @@ void ArtboardComponentList::clear()
     }
     m_artboardInstancesMap.clear();
     m_stateMachinesMap.clear();
+    m_artboardInstancesByIndex.clear();
+    m_stateMachinesByIndex.clear();
     m_listItems.clear();
     m_artboardsMap.clear();
     m_resourcePool.clear();
@@ -43,26 +46,42 @@ rcp<ViewModelInstanceListItem> ArtboardComponentList::listItem(int index)
 }
 ArtboardInstance* ArtboardComponentList::artboardInstance(int index)
 {
-    if (index < m_listItems.size())
+    if (!virtualizationEnabled())
+    {
+        if (index >= 0 && index < m_artboardInstancesByIndex.size())
+        {
+            return m_artboardInstancesByIndex[index];
+        }
+        return nullptr;
+    }
+    if (index >= 0 && index < m_listItems.size())
     {
         auto item = listItem(index);
         auto itr = m_artboardInstancesMap.find(item);
         if (itr != m_artboardInstancesMap.end())
         {
-            return m_artboardInstancesMap[item].get();
+            return itr->second.get();
         }
     }
     return nullptr;
 }
 StateMachineInstance* ArtboardComponentList::stateMachineInstance(int index)
 {
-    if (index < m_listItems.size())
+    if (!virtualizationEnabled())
+    {
+        if (index >= 0 && index < m_stateMachinesByIndex.size())
+        {
+            return m_stateMachinesByIndex[index];
+        }
+        return nullptr;
+    }
+    if (index >= 0 && index < m_listItems.size())
     {
         auto item = listItem(index);
         auto itr = m_stateMachinesMap.find(item);
         if (itr != m_stateMachinesMap.end())
         {
-            return m_stateMachinesMap[item].get();
+            return itr->second.get();
         }
     }
     return nullptr;
@@ -137,17 +156,34 @@ Artboard* ArtboardComponentList::findArtboard(
     {
         return nullptr;
     }
-    auto artboard = m_artboardsMap.find(viewModelInstance->viewModelId());
+    auto viewModelId = viewModelInstance->viewModelId();
+    // Find artboard in the cached mappings
+    auto artboard = m_artboardsMap.find(viewModelId);
     if (artboard != m_artboardsMap.end())
     {
         return artboard->second;
     }
     auto artboards = m_file->artboards();
+    // Check if there is a special rule that maps the view model to a specific
+    // artboard
+    auto listRule = m_artboardMapRules.find(viewModelId);
+    if (listRule != m_artboardMapRules.end())
+    {
+        auto artboardIndex = listRule->second;
+        if (artboardIndex < artboards.size())
+        {
+            auto artboard = artboards[artboardIndex];
+            m_artboardsMap[viewModelId] = artboard;
+            return artboard;
+        }
+    }
+
+    // Search for the first artboard that is bound to this view model
     for (auto& artboard : artboards)
     {
-        if (artboard->viewModelId() == viewModelInstance->viewModelId())
+        if (artboard->viewModelId() == viewModelId)
         {
-            m_artboardsMap[viewModelInstance->viewModelId()] = artboard;
+            m_artboardsMap[viewModelId] = artboard;
             return artboard;
         }
     }
@@ -238,6 +274,15 @@ void ArtboardComponentList::updateList(
     m_listItems.assign(list->begin(), list->end());
     m_artboardSizes.clear();
 
+    // Clear the index vectors - they'll be rebuilt as artboards are created
+    m_artboardInstancesByIndex.clear();
+    m_stateMachinesByIndex.clear();
+    if (!virtualizationEnabled())
+    {
+        m_artboardInstancesByIndex.resize(m_listItems.size(), nullptr);
+        m_stateMachinesByIndex.resize(m_listItems.size(), nullptr);
+    }
+
     auto p = layoutParent();
     if (p != nullptr)
     {
@@ -277,9 +322,22 @@ void ArtboardComponentList::updateList(
                 Vec2D(artboard->width(), artboard->height()));
         }
         auto itr = m_artboardInstancesMap.find(item);
-        if (!virtualizationEnabled() && itr == m_artboardInstancesMap.end())
+        if (!virtualizationEnabled())
         {
-            createArtboardAt(index);
+            if (itr == m_artboardInstancesMap.end())
+            {
+                createArtboardAt(index, false);
+            }
+            else
+            {
+                // Existing artboard - update index vectors
+                m_artboardInstancesByIndex[index] = itr->second.get();
+                auto smItr = m_stateMachinesMap.find(item);
+                if (smItr != m_stateMachinesMap.end())
+                {
+                    m_stateMachinesByIndex[index] = smItr->second.get();
+                }
+            }
         }
         index++;
     }
@@ -377,7 +435,7 @@ void ArtboardComponentList::reset()
         auto itr = m_artboardInstancesMap.find(item);
         if (itr != m_artboardInstancesMap.end())
         {
-            m_artboardInstancesMap[item]->reset();
+            itr->second->reset();
         }
     }
 }
@@ -623,7 +681,7 @@ void ArtboardComponentList::updateConstraints()
     }
 }
 
-void ArtboardComponentList::internalDataContext(DataContext* value)
+void ArtboardComponentList::internalDataContext(rcp<DataContext> value)
 {
     // Reconcile the existing data contexts with the new parent
     for (auto& artboard : m_artboardInstancesMap)
@@ -648,7 +706,7 @@ void ArtboardComponentList::internalDataContext(DataContext* value)
 
 void ArtboardComponentList::bindViewModelInstance(
     rcp<ViewModelInstance> viewModelInstance,
-    DataContext* parent)
+    rcp<DataContext> parent)
 {
     // At the time this is called, artboards will not yet have been instanced
     // so its essentially a no-op and the call to bindViewModelInstance on
@@ -716,7 +774,7 @@ Core* ArtboardComponentList::clone() const
     return clone;
 }
 
-void ArtboardComponentList::createArtboardAt(int index)
+void ArtboardComponentList::createArtboardAt(int index, bool forceLayoutSync)
 {
     auto item = listItem(index);
     if (item != nullptr)
@@ -725,14 +783,15 @@ void ArtboardComponentList::createArtboardAt(int index)
         if (artboardCopy != nullptr)
         {
             attachArtboardOverride(artboardCopy.get(), item);
-            addArtboardAt(std::move(artboardCopy), index);
+            addArtboardAt(std::move(artboardCopy), index, forceLayoutSync);
         }
     }
 }
 
 void ArtboardComponentList::addArtboardAt(
     std::unique_ptr<ArtboardInstance> artboard,
-    int index)
+    int index,
+    bool forceLayoutSync)
 {
     auto item = listItem(index);
     if (item != nullptr)
@@ -746,7 +805,12 @@ void ArtboardComponentList::addArtboardAt(
             artboardInstance->frameOrigin(false);
             artboardInstance->parentIsRow(mainAxisIsRow());
         }
-        syncLayoutChildren();
+        if (forceLayoutSync)
+        {
+            syncLayoutChildren();
+        }
+
+        StateMachineInstance* stateMachineInstance = nullptr;
         auto artboard = findArtboard(item);
         if (artboard != nullptr)
         {
@@ -760,13 +824,28 @@ void ArtboardComponentList::addArtboardAt(
                 applyRecorders(sm, artboard);
                 m_stateMachinesMap[item] = std::move(smPool.back());
                 linkStateMachineToArtboard(sm, artboardInstance);
+                stateMachineInstance = sm;
                 smPool.pop_back();
-                return;
             }
         }
-        auto stateMachineCopy =
-            createStateMachineInstance(this, artboardInstance);
-        m_stateMachinesMap[item] = std::move(stateMachineCopy);
+        if (stateMachineInstance == nullptr)
+        {
+            auto stateMachineCopy =
+                createStateMachineInstance(this, artboardInstance);
+            stateMachineInstance = stateMachineCopy.get();
+            m_stateMachinesMap[item] = std::move(stateMachineCopy);
+        }
+
+        if (!virtualizationEnabled())
+        {
+            if (index >= m_artboardInstancesByIndex.size())
+            {
+                m_artboardInstancesByIndex.resize(index + 1, nullptr);
+                m_stateMachinesByIndex.resize(index + 1, nullptr);
+            }
+            m_artboardInstancesByIndex[index] = artboardInstance;
+            m_stateMachinesByIndex[index] = stateMachineInstance;
+        }
     }
 }
 
@@ -778,17 +857,52 @@ void ArtboardComponentList::bindArtboard(
     {
         auto mainArtboard = this->artboard();
         auto dataContext = mainArtboard->dataContext();
+        rcp<ViewModelInstance> viewModelInstance = nullptr;
+
+        // Check if the source artboard is stateful - if so, create a new
+        // instance for it (takes priority over any existing list item
+        // instance).
+        if (m_file != nullptr)
+        {
+            auto source = artboardInstance->artboardSource();
+            if (source != nullptr && source->isStateful())
+            {
+                auto viewModel = m_file->viewModel(source->viewModelId());
+                if (viewModel != nullptr)
+                {
+                    viewModelInstance =
+                        m_file->createDefaultViewModelInstance(viewModel);
+                }
+                // Store the auto-created instance on the list item.
+                if (viewModelInstance != nullptr)
+                {
+                    listItem->viewModelInstance(viewModelInstance);
+                }
+            }
+        }
+
+        // Fall back to the list item's VM instance if not stateful.
+        if (viewModelInstance == nullptr)
+        {
+            viewModelInstance = listItem->viewModelInstance();
+        }
+
         // TODO: @hernan added this to make sure data binds are procesed in the
         // current frame instead of waiting for the next run. But might not be
         // necessary. Needs more testing.
-        artboardInstance->bindViewModelInstance(listItem->viewModelInstance(),
-                                                dataContext);
+        artboardInstance->bindViewModelInstance(viewModelInstance, dataContext);
         artboardInstance->updateDataBinds();
     }
 }
 
 void ArtboardComponentList::removeArtboardAt(int index)
 {
+    if (!virtualizationEnabled() && index >= 0 &&
+        index < m_artboardInstancesByIndex.size())
+    {
+        m_artboardInstancesByIndex[index] = nullptr;
+        m_stateMachinesByIndex[index] = nullptr;
+    }
     auto item = listItem(index);
     removeArtboard(item);
 }
@@ -1081,4 +1195,9 @@ void ArtboardComponentList::listItemTransforms(std::vector<Mat2D*>& transforms)
             transforms.push_back(&m_artboardTransforms[artboard]);
         }
     }
+}
+
+void ArtboardComponentList::addMapRule(ArtboardListMapRule* rule)
+{
+    m_artboardMapRules[rule->viewModelId()] = rule->artboardId();
 }

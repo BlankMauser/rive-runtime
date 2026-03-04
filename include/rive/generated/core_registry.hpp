@@ -50,6 +50,8 @@
 #include "rive/animation/nested_simple_animation.hpp"
 #include "rive/animation/nested_state_machine.hpp"
 #include "rive/animation/nested_trigger.hpp"
+#include "rive/animation/scripted_listener_action.hpp"
+#include "rive/animation/scripted_transition_condition.hpp"
 #include "rive/animation/state_machine.hpp"
 #include "rive/animation/state_machine_bool.hpp"
 #include "rive/animation/state_machine_component.hpp"
@@ -88,8 +90,10 @@
 #include "rive/animation/transition_viewmodel_condition.hpp"
 #include "rive/artboard.hpp"
 #include "rive/artboard_component_list.hpp"
+#include "rive/artboard_list_map_rule.hpp"
 #include "rive/assets/asset.hpp"
 #include "rive/assets/audio_asset.hpp"
+#include "rive/assets/blob_asset.hpp"
 #include "rive/assets/drawable_asset.hpp"
 #include "rive/assets/export_audio.hpp"
 #include "rive/assets/file_asset.hpp"
@@ -477,6 +481,8 @@ public:
                 return new AnimationState();
             case NestedTriggerBase::typeKey:
                 return new NestedTrigger();
+            case ScriptedListenerActionBase::typeKey:
+                return new ScriptedListenerAction();
             case KeyedObjectBase::typeKey:
                 return new KeyedObject();
             case AnimationBase::typeKey:
@@ -505,6 +511,8 @@ public:
                 return new ListenerBoolChange();
             case ListenerAlignTargetBase::typeKey:
                 return new ListenerAlignTarget();
+            case ScriptedTransitionConditionBase::typeKey:
+                return new ScriptedTransitionCondition();
             case TransitionNumberConditionBase::typeKey:
                 return new TransitionNumberCondition();
             case TransitionValueBooleanComparatorBase::typeKey:
@@ -799,8 +807,12 @@ public:
                 return new Text();
             case TextValueRunBase::typeKey:
                 return new TextValueRun();
+            case ArtboardListMapRuleBase::typeKey:
+                return new ArtboardListMapRule();
             case CustomPropertyEnumBase::typeKey:
                 return new CustomPropertyEnum();
+            case BlobAssetBase::typeKey:
+                return new BlobAsset();
             case FolderBase::typeKey:
                 return new Folder();
             case ScriptAssetBase::typeKey:
@@ -1194,6 +1206,9 @@ public:
             case NestedInputBase::inputIdPropertyKey:
                 object->as<NestedInputBase>()->inputId(value);
                 break;
+            case ScriptedListenerActionBase::scriptAssetIdPropertyKey:
+                object->as<ScriptedListenerActionBase>()->scriptAssetId(value);
+                break;
             case KeyedObjectBase::objectIdPropertyKey:
                 object->as<KeyedObjectBase>()->objectId(value);
                 break;
@@ -1235,6 +1250,10 @@ public:
                 break;
             case ListenerAlignTargetBase::targetIdPropertyKey:
                 object->as<ListenerAlignTargetBase>()->targetId(value);
+                break;
+            case ScriptedTransitionConditionBase::scriptAssetIdPropertyKey:
+                object->as<ScriptedTransitionConditionBase>()->scriptAssetId(
+                    value);
                 break;
             case TransitionValueConditionBase::opValuePropertyKey:
                 object->as<TransitionValueConditionBase>()->opValue(value);
@@ -1511,8 +1530,17 @@ public:
             case TextBase::verticalAlignValuePropertyKey:
                 object->as<TextBase>()->verticalAlignValue(value);
                 break;
+            case TextBase::textRunListSourcePropertyKey:
+                object->as<TextBase>()->textRunListSource(value);
+                break;
             case TextValueRunBase::styleIdPropertyKey:
                 object->as<TextValueRunBase>()->styleId(value);
+                break;
+            case ArtboardListMapRuleBase::artboardIdPropertyKey:
+                object->as<ArtboardListMapRuleBase>()->artboardId(value);
+                break;
+            case ArtboardListMapRuleBase::viewModelIdPropertyKey:
+                object->as<ArtboardListMapRuleBase>()->viewModelId(value);
                 break;
             case CustomPropertyEnumBase::propertyValuePropertyKey:
                 object->as<CustomPropertyEnumBase>()->propertyValue(value);
@@ -1754,6 +1782,9 @@ public:
                 break;
             case LayoutComponentBase::clipPropertyKey:
                 object->as<LayoutComponentBase>()->clip(value);
+                break;
+            case ArtboardBase::isStatefulPropertyKey:
+                object->as<ArtboardBase>()->isStateful(value);
                 break;
             case DataBindPathBase::isRelativePropertyKey:
                 object->as<DataBindPathBase>()->isRelative(value);
@@ -2737,6 +2768,9 @@ public:
                 return object->as<AnimationStateBase>()->animationId();
             case NestedInputBase::inputIdPropertyKey:
                 return object->as<NestedInputBase>()->inputId();
+            case ScriptedListenerActionBase::scriptAssetIdPropertyKey:
+                return object->as<ScriptedListenerActionBase>()
+                    ->scriptAssetId();
             case KeyedObjectBase::objectIdPropertyKey:
                 return object->as<KeyedObjectBase>()->objectId();
             case BlendAnimationBase::animationIdPropertyKey:
@@ -2766,6 +2800,9 @@ public:
                 return object->as<ListenerBoolChangeBase>()->value();
             case ListenerAlignTargetBase::targetIdPropertyKey:
                 return object->as<ListenerAlignTargetBase>()->targetId();
+            case ScriptedTransitionConditionBase::scriptAssetIdPropertyKey:
+                return object->as<ScriptedTransitionConditionBase>()
+                    ->scriptAssetId();
             case TransitionValueConditionBase::opValuePropertyKey:
                 return object->as<TransitionValueConditionBase>()->opValue();
             case TransitionViewModelConditionBase::opValuePropertyKey:
@@ -2956,8 +2993,14 @@ public:
                 return object->as<TextBase>()->wrapValue();
             case TextBase::verticalAlignValuePropertyKey:
                 return object->as<TextBase>()->verticalAlignValue();
+            case TextBase::textRunListSourcePropertyKey:
+                return object->as<TextBase>()->textRunListSource();
             case TextValueRunBase::styleIdPropertyKey:
                 return object->as<TextValueRunBase>()->styleId();
+            case ArtboardListMapRuleBase::artboardIdPropertyKey:
+                return object->as<ArtboardListMapRuleBase>()->artboardId();
+            case ArtboardListMapRuleBase::viewModelIdPropertyKey:
+                return object->as<ArtboardListMapRuleBase>()->viewModelId();
             case CustomPropertyEnumBase::propertyValuePropertyKey:
                 return object->as<CustomPropertyEnumBase>()->propertyValue();
             case CustomPropertyEnumBase::enumIdPropertyKey:
@@ -3136,6 +3179,8 @@ public:
                 return object->as<CustomPropertyBooleanBase>()->propertyValue();
             case LayoutComponentBase::clipPropertyKey:
                 return object->as<LayoutComponentBase>()->clip();
+            case ArtboardBase::isStatefulPropertyKey:
+                return object->as<ArtboardBase>()->isStateful();
             case DataBindPathBase::isRelativePropertyKey:
                 return object->as<DataBindPathBase>()->isRelative();
             case BindablePropertyBooleanBase::propertyValuePropertyKey:
@@ -3725,6 +3770,7 @@ public:
             case ListenerInputChangeBase::nestedInputIdPropertyKey:
             case AnimationStateBase::animationIdPropertyKey:
             case NestedInputBase::inputIdPropertyKey:
+            case ScriptedListenerActionBase::scriptAssetIdPropertyKey:
             case KeyedObjectBase::objectIdPropertyKey:
             case BlendAnimationBase::animationIdPropertyKey:
             case BlendAnimationDirectBase::inputIdPropertyKey:
@@ -3739,6 +3785,7 @@ public:
             case KeyFrameIdBase::valuePropertyKey:
             case ListenerBoolChangeBase::valuePropertyKey:
             case ListenerAlignTargetBase::targetIdPropertyKey:
+            case ScriptedTransitionConditionBase::scriptAssetIdPropertyKey:
             case TransitionValueConditionBase::opValuePropertyKey:
             case TransitionViewModelConditionBase::opValuePropertyKey:
             case BlendState1DInputBase::inputIdPropertyKey:
@@ -3829,7 +3876,10 @@ public:
             case TextBase::originValuePropertyKey:
             case TextBase::wrapValuePropertyKey:
             case TextBase::verticalAlignValuePropertyKey:
+            case TextBase::textRunListSourcePropertyKey:
             case TextValueRunBase::styleIdPropertyKey:
+            case ArtboardListMapRuleBase::artboardIdPropertyKey:
+            case ArtboardListMapRuleBase::viewModelIdPropertyKey:
             case CustomPropertyEnumBase::propertyValuePropertyKey:
             case CustomPropertyEnumBase::enumIdPropertyKey:
             case FileAssetBase::assetIdPropertyKey:
@@ -3906,6 +3956,7 @@ public:
             case ClippingShapeBase::isVisiblePropertyKey:
             case CustomPropertyBooleanBase::propertyValuePropertyKey:
             case LayoutComponentBase::clipPropertyKey:
+            case ArtboardBase::isStatefulPropertyKey:
             case DataBindPathBase::isRelativePropertyKey:
             case BindablePropertyBooleanBase::propertyValuePropertyKey:
             case TextModifierRangeBase::clampPropertyKey:
@@ -4377,6 +4428,8 @@ public:
                 return object->is<AnimationStateBase>();
             case NestedInputBase::inputIdPropertyKey:
                 return object->is<NestedInputBase>();
+            case ScriptedListenerActionBase::scriptAssetIdPropertyKey:
+                return object->is<ScriptedListenerActionBase>();
             case KeyedObjectBase::objectIdPropertyKey:
                 return object->is<KeyedObjectBase>();
             case BlendAnimationBase::animationIdPropertyKey:
@@ -4404,6 +4457,8 @@ public:
                 return object->is<ListenerBoolChangeBase>();
             case ListenerAlignTargetBase::targetIdPropertyKey:
                 return object->is<ListenerAlignTargetBase>();
+            case ScriptedTransitionConditionBase::scriptAssetIdPropertyKey:
+                return object->is<ScriptedTransitionConditionBase>();
             case TransitionValueConditionBase::opValuePropertyKey:
                 return object->is<TransitionValueConditionBase>();
             case TransitionViewModelConditionBase::opValuePropertyKey:
@@ -4584,8 +4639,14 @@ public:
                 return object->is<TextBase>();
             case TextBase::verticalAlignValuePropertyKey:
                 return object->is<TextBase>();
+            case TextBase::textRunListSourcePropertyKey:
+                return object->is<TextBase>();
             case TextValueRunBase::styleIdPropertyKey:
                 return object->is<TextValueRunBase>();
+            case ArtboardListMapRuleBase::artboardIdPropertyKey:
+                return object->is<ArtboardListMapRuleBase>();
+            case ArtboardListMapRuleBase::viewModelIdPropertyKey:
+                return object->is<ArtboardListMapRuleBase>();
             case CustomPropertyEnumBase::propertyValuePropertyKey:
                 return object->is<CustomPropertyEnumBase>();
             case CustomPropertyEnumBase::enumIdPropertyKey:
@@ -4732,6 +4793,8 @@ public:
                 return object->is<CustomPropertyBooleanBase>();
             case LayoutComponentBase::clipPropertyKey:
                 return object->is<LayoutComponentBase>();
+            case ArtboardBase::isStatefulPropertyKey:
+                return object->is<ArtboardBase>();
             case DataBindPathBase::isRelativePropertyKey:
                 return object->is<DataBindPathBase>();
             case BindablePropertyBooleanBase::propertyValuePropertyKey:

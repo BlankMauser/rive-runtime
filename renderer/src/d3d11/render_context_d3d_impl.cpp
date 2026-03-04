@@ -7,6 +7,7 @@
 #include "rive/renderer/d3d/d3d_constants.hpp"
 
 #include "rive/renderer/texture.hpp"
+#include "rive/profiler/profiler_macros.h"
 
 #include <D3DCompiler.h>
 
@@ -408,6 +409,9 @@ std::unique_ptr<RenderContext> RenderContextD3DImpl::MakeContext(
     ComPtr<ID3D11DeviceContext> gpuContext,
     const D3DContextOptions& contextOptions)
 {
+#if defined(RIVE_MICROPROFILE)
+    MicroProfileGpuInitD3D11(gpu.Get());
+#endif
     D3DCapabilities d3dCapabilities;
     D3D11_FEATURE_DATA_D3D11_OPTIONS2 d3d11Options2;
 
@@ -528,11 +532,18 @@ RenderContextD3DImpl::RenderContextD3DImpl(
         &rasterDesc,
         m_backCulledRasterState[0].ReleaseAndGetAddressOf()));
 
-    // ...And with scissor for the atlas.
+    // ...And with scissor and no culling for the atlas fill.
+    rasterDesc.CullMode = D3D11_CULL_NONE;
     rasterDesc.ScissorEnable = TRUE;
     VERIFY_OK(m_gpu->CreateRasterizerState(
         &rasterDesc,
-        m_atlasRasterState.ReleaseAndGetAddressOf()));
+        m_atlasFillRasterState.ReleaseAndGetAddressOf()));
+
+    // ...And with culling back on for the atlas stroke.
+    rasterDesc.CullMode = D3D11_CULL_BACK;
+    VERIFY_OK(m_gpu->CreateRasterizerState(
+        &rasterDesc,
+        m_atlasStrokeRasterState.ReleaseAndGetAddressOf()));
 
     // ...And with wireframe for debugging.
     rasterDesc.ScissorEnable = FALSE;
@@ -872,6 +883,19 @@ class TextureD3DImpl : public Texture
 {
 public:
     TextureD3DImpl(RenderContextD3DImpl* renderContextImpl,
+                   ComPtr<ID3D11Texture2D> image,
+                   UINT width,
+                   UINT height) :
+        Texture(width, height), m_texture(image)
+    {
+        // Create a view.
+        VERIFY_OK(renderContextImpl->gpu()->CreateShaderResourceView(
+            m_texture.Get(),
+            NULL,
+            m_srv.ReleaseAndGetAddressOf()));
+    }
+
+    TextureD3DImpl(RenderContextD3DImpl* renderContextImpl,
                    UINT width,
                    UINT height,
                    UINT mipLevelCount,
@@ -931,6 +955,14 @@ rcp<Texture> RenderContextD3DImpl::makeImageTexture(
                                     height,
                                     mipLevelCount,
                                     imageDataRGBAPremul);
+}
+
+rcp<Texture> RenderContextD3DImpl::adoptImageTexture(
+    ComPtr<ID3D11Texture2D> image,
+    uint32_t width,
+    uint32_t height)
+{
+    return make_rcp<TextureD3DImpl>(this, image, width, height);
 }
 
 class BufferRingD3D : public BufferRing
@@ -1322,7 +1354,7 @@ void RenderContextD3DImpl::resizeAtlasTexture(uint32_t width, uint32_t height)
     }
     else
     {
-        m_atlasTexture = makeSimple2DTexture(DXGI_FORMAT_R32_FLOAT,
+        m_atlasTexture = makeSimple2DTexture(DXGI_FORMAT_R16_FLOAT,
                                              width,
                                              height,
                                              1,
@@ -1544,6 +1576,8 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
     // Tessellate all curves into vertices in the tessellation texture.
     if (desc.tessVertexSpanCount > 0)
     {
+        RIVE_PROF_GPUNAME("Tessellate Curves");
+
         ID3D11Buffer* tessSpanBuffer =
             flush_buffer(m_gpuContext.Get(), tessSpanBufferRing());
         UINT tessStride = sizeof(TessVertexSpan);
@@ -1626,6 +1660,8 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
     // Render the atlas if we have any offscreen feathers.
     if ((desc.atlasFillBatchCount | desc.atlasStrokeBatchCount) != 0)
     {
+        RIVE_PROF_GPUNAME("atlasRender");
+
         float clearZero[4]{};
         m_gpuContext->ClearRenderTargetView(m_atlasTextureRTV.Get(), clearZero);
 
@@ -1635,7 +1671,6 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
         m_gpuContext->IASetIndexBuffer(m_patchIndexBuffer.Get(),
                                        DXGI_FORMAT_R16_UINT,
                                        0);
-        m_gpuContext->RSSetState(m_atlasRasterState.Get());
 
         D3D11_VIEWPORT viewport = {0,
                                    0,
@@ -1651,6 +1686,7 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
 
         if (desc.atlasFillBatchCount != 0)
         {
+            m_gpuContext->RSSetState(m_atlasFillRasterState.Get());
             m_pipelineManager.setAtlasFillState();
             m_gpuContext->OMSetBlendState(m_plusBlendState.Get(),
                                           NULL,
@@ -1678,6 +1714,7 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
 
         if (desc.atlasStrokeBatchCount != 0)
         {
+            m_gpuContext->RSSetState(m_atlasStrokeRasterState.Get());
             m_pipelineManager.setAtlasStrokeState();
             m_gpuContext->OMSetBlendState(m_maxBlendState.Get(),
                                           NULL,
@@ -1708,59 +1745,69 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
     }
 
     // Setup and clear the PLS textures.
-    switch (desc.colorLoadAction)
     {
-        case gpu::LoadAction::clear:
-            if (desc.fixedFunctionColorOutput)
-            {
-                float clearColor4f[4];
-                UnpackColorToRGBA32FPremul(desc.colorClearValue, clearColor4f);
-                m_gpuContext->ClearRenderTargetView(renderTarget->targetRTV(),
-                                                    clearColor4f);
-            }
-            else if (m_d3dCapabilities.supportsTypedUAVLoadStore)
-            {
-                float clearColor4f[4];
-                UnpackColorToRGBA32FPremul(desc.colorClearValue, clearColor4f);
-                m_gpuContext->ClearUnorderedAccessViewFloat(
-                    renderTarget->targetUAV(),
-                    clearColor4f);
-            }
-            else
-            {
-                UINT clearColorui[4] = {
-                    gpu::SwizzleRiveColorToRGBAPremul(desc.colorClearValue)};
-                m_gpuContext->ClearUnorderedAccessViewUint(
-                    renderTarget->targetUAV(),
-                    clearColorui);
-            }
-            break;
-        case gpu::LoadAction::preserveRenderTarget:
-            if (!desc.fixedFunctionColorOutput &&
-                !renderTarget->targetTextureSupportsUAV())
-            {
-                // We're rendering to an offscreen UAV and preserving the
-                // target. Copy the target texture over.
-                blit_sub_rect(m_gpuContext.Get(),
-                              renderTarget->offscreenTexture(),
-                              renderTarget->targetTexture(),
-                              desc.renderTargetUpdateBounds);
-            }
-            break;
-        case gpu::LoadAction::dontCare:
-            break;
+        RIVE_PROF_GPUNAME("clearPLSTextures");
+        switch (desc.colorLoadAction)
+        {
+
+            case gpu::LoadAction::clear:
+                if (desc.fixedFunctionColorOutput)
+                {
+                    float clearColor4f[4];
+                    UnpackColorToRGBA32FPremul(desc.colorClearValue,
+                                               clearColor4f);
+                    m_gpuContext->ClearRenderTargetView(
+                        renderTarget->targetRTV(),
+                        clearColor4f);
+                }
+                else if (m_d3dCapabilities.supportsTypedUAVLoadStore)
+                {
+                    float clearColor4f[4];
+                    UnpackColorToRGBA32FPremul(desc.colorClearValue,
+                                               clearColor4f);
+                    m_gpuContext->ClearUnorderedAccessViewFloat(
+                        renderTarget->targetUAV(),
+                        clearColor4f);
+                }
+                else
+                {
+                    UINT clearColorui[4] = {gpu::SwizzleRiveColorToRGBAPremul(
+                        desc.colorClearValue)};
+                    m_gpuContext->ClearUnorderedAccessViewUint(
+                        renderTarget->targetUAV(),
+                        clearColorui);
+                }
+                break;
+            case gpu::LoadAction::preserveRenderTarget:
+                if (!desc.fixedFunctionColorOutput &&
+                    !renderTarget->targetTextureSupportsUAV())
+                {
+                    // We're rendering to an offscreen UAV and preserving the
+                    // target. Copy the target texture over.
+                    blit_sub_rect(m_gpuContext.Get(),
+                                  renderTarget->offscreenTexture(),
+                                  renderTarget->targetTexture(),
+                                  desc.renderTargetUpdateBounds);
+                }
+                break;
+            case gpu::LoadAction::dontCare:
+                break;
+        }
+        if (desc.combinedShaderFeatures & gpu::ShaderFeatures::ENABLE_CLIPPING)
+        {
+            constexpr static UINT kZero[4]{};
+            m_gpuContext->ClearUnorderedAccessViewUint(renderTarget->clipUAV(),
+                                                       kZero);
+        }
+        {
+            UINT coverageClear[4]{desc.coverageClearValue};
+            m_gpuContext->ClearUnorderedAccessViewUint(
+                renderTarget->coverageUAV(),
+                coverageClear);
+        }
     }
-    if (desc.combinedShaderFeatures & gpu::ShaderFeatures::ENABLE_CLIPPING)
-    {
-        constexpr static UINT kZero[4]{};
-        m_gpuContext->ClearUnorderedAccessViewUint(renderTarget->clipUAV(),
-                                                   kZero);
-    }
-    {
-        UINT coverageClear[4]{desc.coverageClearValue};
-        m_gpuContext->ClearUnorderedAccessViewUint(renderTarget->coverageUAV(),
-                                                   coverageClear);
-    }
+
+    RIVE_PROF_GPUNAME("DrawList");
 
     // Execute the DrawList.
     ID3D11RenderTargetView* targetRTV =
@@ -1892,6 +1939,7 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
                                                 &drawUniforms,
                                                 0,
                                                 0);
+                RIVE_PROF_GPUNAME("Patches");
                 m_gpuContext->DrawIndexedInstanced(PatchIndexCount(drawType),
                                                    batch.elementCount,
                                                    PatchBaseIndex(drawType),
@@ -1906,11 +1954,16 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
                     D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 m_gpuContext->RSSetState(
                     m_backCulledRasterState[desc.wireframe].Get());
+                RIVE_PROF_GPUNAME(drawType == DrawType::atlasBlit
+                                      ? "atlasBlit"
+                                      : "interiorTriangulation");
                 m_gpuContext->Draw(batch.elementCount, batch.baseElement);
                 break;
             }
             case DrawType::imageRect:
             {
+                RIVE_PROF_GPUNAME("imageRect");
+
                 m_gpuContext->IASetPrimitiveTopology(
                     D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 m_gpuContext->IASetIndexBuffer(m_imageRectIndexBuffer.Get(),
@@ -1932,6 +1985,7 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
             }
             case DrawType::imageMesh:
             {
+                RIVE_PROF_GPUNAME("imageMesh");
                 LITE_RTTI_CAST_OR_BREAK(vertexBuffer,
                                         RenderBufferD3DImpl*,
                                         batch.vertexBuffer);
@@ -1972,6 +2026,9 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
                 break;
             }
             case DrawType::renderPassResolve:
+            {
+                RIVE_PROF_GPUNAME("renderPassResolve");
+
                 assert(desc.interlockMode == gpu::InterlockMode::atomics);
                 m_gpuContext->IASetPrimitiveTopology(
                     D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -2010,7 +2067,8 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
                         NULL);
                 }
                 m_gpuContext->Draw(4, 0);
-                break;
+            }
+            break;
             case DrawType::msaaStrokes:
             case DrawType::msaaMidpointFanBorrowedCoverage:
             case DrawType::msaaMidpointFans:
@@ -2027,6 +2085,8 @@ void RenderContextD3DImpl::flush(const FlushDescriptor& desc)
     if (desc.interlockMode == gpu::InterlockMode::rasterOrdering &&
         !renderTarget->targetTextureSupportsUAV())
     {
+        RIVE_PROF_GPUNAME("blit_sub_rect");
+
         // We rendered to an offscreen UAV and did not resolve to the
         // renderTarget. Copy back to the main target.
         assert(!desc.fixedFunctionColorOutput);

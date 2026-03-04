@@ -14,6 +14,9 @@
 #include "rive/renderer/trivial_block_allocator.hpp"
 #include "rive/shapes/paint/image_sampler.hpp"
 
+// Use the define to run the feather LUT code
+// #define RIVE_GENERATE_FEATHER_LUT
+
 namespace rive
 {
 class GrInnerFanTriangulator;
@@ -38,6 +41,7 @@ class Gradient;
 class RenderContextImpl;
 class RenderTarget;
 class Texture;
+enum class DitherMode;
 
 // Global MipMap LOD Bias to apply to samplers. Going lower leads to sharper
 // filtering at the expense of potential shimmering.
@@ -814,9 +818,10 @@ enum class ShaderFeatures
     ENABLE_EVEN_ODD = 1 << 4,
     ENABLE_NESTED_CLIPPING = 1 << 5,
     ENABLE_HSL_BLEND_MODES = 1 << 6,
+    ENABLE_DITHER = 1 << 7,
 };
 RIVE_MAKE_ENUM_BITSET(ShaderFeatures)
-constexpr static size_t kShaderFeatureCount = 7;
+constexpr static size_t kShaderFeatureCount = 8;
 constexpr static ShaderFeatures kAllShaderFeatures =
     static_cast<gpu::ShaderFeatures>((1 << kShaderFeatureCount) - 1);
 constexpr static ShaderFeatures kVertexShaderFeaturesMask =
@@ -842,11 +847,14 @@ constexpr static ShaderFeatures ShaderFeaturesMaskFor(
         case InterlockMode::clockwiseAtomic:
             // TODO: shader features aren't fully implemented yet in
             // clockwiseAtomic mode.
-            return ShaderFeatures::ENABLE_FEATHER;
+            return ShaderFeatures::ENABLE_CLIP_RECT |
+                   ShaderFeatures::ENABLE_FEATHER |
+                   ShaderFeatures::ENABLE_DITHER;
         case InterlockMode::msaa:
             return ShaderFeatures::ENABLE_CLIP_RECT |
                    ShaderFeatures::ENABLE_ADVANCED_BLEND |
-                   ShaderFeatures::ENABLE_HSL_BLEND_MODES;
+                   ShaderFeatures::ENABLE_HSL_BLEND_MODES |
+                   ShaderFeatures::ENABLE_DITHER;
     }
     RIVE_UNREACHABLE();
 }
@@ -913,7 +921,8 @@ constexpr static ShaderFeatures ShaderFeaturesMaskFor(
                 mask = ShaderFeatures::ENABLE_CLIPPING |
                        ShaderFeatures::ENABLE_CLIP_RECT |
                        ShaderFeatures::ENABLE_ADVANCED_BLEND |
-                       ShaderFeatures::ENABLE_HSL_BLEND_MODES;
+                       ShaderFeatures::ENABLE_HSL_BLEND_MODES |
+                       ShaderFeatures::ENABLE_DITHER;
                 break;
             }
             // Since atomic mode has to resolve previous draws, images need to
@@ -933,7 +942,7 @@ constexpr static ShaderFeatures ShaderFeaturesMaskFor(
             mask = kAllShaderFeatures;
             break;
         case DrawType::msaaStencilClipReset:
-            mask = ShaderFeatures::NONE;
+            mask = ShaderFeatures::ENABLE_DITHER;
             break;
         case DrawType::renderPassInitialize:
             if (interlockMode == InterlockMode::atomics)
@@ -941,7 +950,8 @@ constexpr static ShaderFeatures ShaderFeaturesMaskFor(
                 // Atomic mode initializes clipping and color (when advanced
                 // blend is active).
                 mask = ShaderFeatures::ENABLE_CLIPPING |
-                       ShaderFeatures::ENABLE_ADVANCED_BLEND;
+                       ShaderFeatures::ENABLE_ADVANCED_BLEND |
+                       ShaderFeatures::ENABLE_DITHER;
             }
             else
             {
@@ -949,7 +959,7 @@ constexpr static ShaderFeatures ShaderFeaturesMaskFor(
                 // MSAA mode only needs to initialize color, and only when
                 // preserving the render target but using a transient MSAA
                 // attachment.
-                mask = ShaderFeatures::NONE;
+                mask = ShaderFeatures::ENABLE_DITHER;
             }
             break;
         case DrawType::renderPassResolve:
@@ -961,7 +971,7 @@ constexpr static ShaderFeatures ShaderFeaturesMaskFor(
             {
                 assert(interlockMode == InterlockMode::rasterOrdering ||
                        interlockMode == InterlockMode::msaa);
-                mask = ShaderFeatures::NONE;
+                mask = ShaderFeatures::ENABLE_DITHER;
             }
             break;
     }
@@ -1185,6 +1195,19 @@ struct FlushDescriptor
     IAABB renderTargetUpdateBounds; // drawBounds, or renderTargetBounds if
                                     // loadAction == LoadAction::clear.
 
+    // If nonzero, frames are split up into virtual tiles of this size.
+    //
+    // As of now, each tile gets drawn in a separate render pass. The purpose of
+    // these virtual tiles, for now, is to break the frame up into smaller
+    // chunks so that Rive can be pre-empted by other rendering processes. This
+    // is only supported on Vulkan/non-msaa.
+    //
+    // TODO: We could also explore a different type of virtual tiling that
+    // reduces barriers in atomic mode, but that is not how this feature works
+    // currently.
+    uint32_t virtualTileWidth = 0;
+    uint32_t virtualTileHeight = 0;
+
     // True if the drawList ends with a "renderPassResolve" draw, in which case
     // the backend may need to perform special setup for a custom resolve.
     bool manuallyResolved = false;
@@ -1238,6 +1261,7 @@ struct FlushDescriptor
     bool clockwiseFillOverride = false;
     bool hasTriangleVertices = false;
     bool wireframe = false;
+    DitherMode ditherMode;
 #ifdef WITH_RIVE_TOOLS
     // Synthesize compilation failures to make sure the device handles them
     // gracefully. (e.g., by falling back on an uber shader or at least not
@@ -1267,6 +1291,12 @@ struct FlushDescriptor
     // renderTarget.
     const BlockAllocatedLinkedList<DrawBatch>* drawList = nullptr;
     const DrawBatch* firstDstBlendBarrier = nullptr;
+
+    // This tracks any barriers that will not be handled by DrawBatches (e.g.,
+    // renderpass-specific barriers that won't be handled because the batch list
+    // is empty). The backend may need to issue these barriers before finishing
+    // the render pass.
+    BarrierFlags unresolvedBarriers = BarrierFlags::none;
 };
 
 // Returns the area of the (potentially non-rectangular) quadrilateral that
@@ -1347,9 +1377,15 @@ private:
     WRITEONLY uint32_t m_pathIDGranularity;
     WRITEONLY float m_vertexDiscardValue;
     WRITEONLY float m_mipMapLODBias;
+    WRITEONLY uint32_t m_maxPathId;
+    WRITEONLY float m_ditherScale;
+    WRITEONLY float m_ditherBias;
+    // Amount by which to multiply a computed dither value when storing as
+    // RGB10 (as opposed to writing it out to the framebuffer).
+    WRITEONLY float m_ditherConversionToRGB10;
     WRITEONLY uint32_t m_wireframeEnabled; // Forces coverage to solid.
     // Uniform blocks must be multiples of 256 bytes in size.
-    WRITEONLY uint8_t m_padTo256Bytes[256 - 84];
+    WRITEONLY uint8_t m_padTo256Bytes[256 - 100];
 };
 static_assert(sizeof(FlushUniforms) == 256);
 
@@ -1643,13 +1679,19 @@ public:
 
     using MapResourceBufferFn =
         void* (RenderContextImpl::*)(size_t mapSizeInBytes);
-    void mapElements(RenderContextImpl* impl,
-                     MapResourceBufferFn mapFn,
-                     size_t elementCount)
+    [[nodiscard]] bool mapElements(RenderContextImpl* impl,
+                                   MapResourceBufferFn mapFn,
+                                   size_t elementCount)
     {
         assert(m_mappedMemory == nullptr);
         void* ptr = (impl->*mapFn)(elementCount * sizeof(T));
+        if (ptr == nullptr)
+        {
+            return false;
+        }
+
         reset(reinterpret_cast<T*>(ptr), elementCount);
+        return true;
     }
 
     using UnmapResourceBufferFn =
@@ -1658,10 +1700,12 @@ public:
                        UnmapResourceBufferFn unmapFn,
                        size_t elementCount)
     {
-        assert(m_mappedMemory != nullptr);
-        assert(m_mappingEnd - m_mappedMemory == elementCount);
-        (impl->*unmapFn)(elementCount * sizeof(T));
-        reset();
+        if (m_mappedMemory != nullptr)
+        {
+            assert(m_mappingEnd - m_mappedMemory == elementCount);
+            (impl->*unmapFn)(elementCount * sizeof(T));
+            reset();
+        }
     }
 
     operator bool() const { return m_mappedMemory; }
@@ -1845,7 +1889,7 @@ constexpr static PipelineState ATLAS_FILL_PIPELINE_STATE = {
     .depthWriteEnabled = false,
     .stencilTestEnabled = false,
     .stencilWriteMask = 0,
-    .cullFace = CullFace::counterclockwise,
+    .cullFace = CullFace::none,
     .blendEquation = BlendEquation::plus,
     .colorWriteEnabled = true,
 };
@@ -1872,7 +1916,7 @@ extern const uint16_t g_inverseGaussianIntegralTableF16[GAUSSIAN_TABLE_SIZE];
 // Code to generate g_gaussianIntegralTableF16 and
 // g_inverseGaussianIntegralTableF32. This is left in the codebase but #ifdef'd
 // out in case we ever want to change any parameters of the built-in tables.
-#if 0
+#ifdef RIVE_GENERATE_FEATHER_LUT
 void generate_gausian_integral_table(float (&)[GAUSSIAN_TABLE_SIZE]);
 void generate_inverse_gausian_integral_table(float (&)[GAUSSIAN_TABLE_SIZE]);
 #endif

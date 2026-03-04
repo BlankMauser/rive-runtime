@@ -8,6 +8,7 @@
 #include "rive/animation/layer_state_flags.hpp"
 #include "rive/animation/nested_linear_animation.hpp"
 #include "rive/animation/nested_state_machine.hpp"
+#include "rive/animation/scripted_transition_condition.hpp"
 #include "rive/animation/state_instance.hpp"
 #include "rive/animation/state_machine_bool.hpp"
 #include "rive/animation/state_machine_input_instance.hpp"
@@ -19,6 +20,8 @@
 #include "rive/animation/state_machine_trigger.hpp"
 #include "rive/animation/state_machine.hpp"
 #include "rive/animation/state_transition.hpp"
+#include "rive/animation/listener_action.hpp"
+#include "rive/animation/scripted_listener_action.hpp"
 #include "rive/animation/transition_condition.hpp"
 #include "rive/animation/transition_comparator.hpp"
 #include "rive/animation/transition_property_viewmodel_comparator.hpp"
@@ -47,6 +50,7 @@
 #include "rive/dirtyable.hpp"
 #include "rive/profiler/profiler_macros.h"
 #include "rive/text/text_input.hpp"
+#include "rive/refcnt.hpp"
 #include <unordered_map>
 #include <chrono>
 
@@ -67,6 +71,19 @@ public:
               const StateMachineLayer* layer,
               ArtboardInstance* instance)
     {
+
+        if (File::deterministicMode)
+        {
+            srand((unsigned int)1);
+        }
+        else
+        {
+            auto now = std::chrono::high_resolution_clock::now();
+            auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             now.time_since_epoch())
+                             .count();
+            srand((unsigned int)nanos);
+        }
         m_stateMachineInstance = stateMachineInstance;
         m_artboardInstance = instance;
         assert(m_layer == nullptr);
@@ -74,16 +91,6 @@ public:
             layer->anyState()->makeInstance(instance).release();
         m_layer = layer;
         changeState(m_layer->entryState());
-
-#ifdef TESTING
-        srand((unsigned int)1);
-#else
-        auto now = std::chrono::high_resolution_clock::now();
-        auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                         now.time_since_epoch())
-                         .count();
-        srand((unsigned int)nanos);
-#endif
     }
 
     void resetState()
@@ -1011,7 +1018,7 @@ public:
             m_viewModelInstanceValue = nullptr;
         }
     }
-    void bindFromContext(DataContext* dataContext)
+    void bindFromContext(rcp<DataContext> dataContext)
     {
         clearDataContext();
         auto vmProp =
@@ -1480,7 +1487,25 @@ StateMachineInstance::StateMachineInstance(const StateMachine* machine,
             this);
         m_hitComponents.push_back(std::move(hc));
     }
+
+    // Initialize local instances of ScriptedObjects
+    for (auto& scriptedOb : machine->scriptedObjects())
+    {
+        m_scriptedObjectsMap[scriptedOb] =
+            scriptedOb->cloneScriptedObject(this);
+    }
     sortHitComponents();
+}
+
+ScriptedObject* StateMachineInstance::scriptedObject(
+    const ScriptedObject* source) const
+{
+    auto itr = m_scriptedObjectsMap.find(source);
+    if (itr != m_scriptedObjectsMap.end())
+    {
+        return itr->second;
+    }
+    return nullptr;
 }
 
 StateMachineInstance::~StateMachineInstance()
@@ -1506,6 +1531,12 @@ StateMachineInstance::~StateMachineInstance()
         delete listenerViewModel;
     }
     m_bindablePropertyInstances.clear();
+    for (auto& pair : m_scriptedObjectsMap)
+    {
+        delete pair.second;
+        pair.second = nullptr;
+    }
+    m_scriptedObjectsMap.clear();
 }
 
 void StateMachineInstance::removeEventListeners()
@@ -1794,28 +1825,52 @@ void StateMachineInstance::bindViewModelInstance(
     rcp<ViewModelInstance> viewModelInstance)
 {
     clearDataContext();
-    m_ownsDataContext = true;
-    auto dataContext = new DataContext(viewModelInstance);
+    auto dataContext = make_rcp<DataContext>(viewModelInstance);
     viewModelInstance->addDependent(this);
     m_artboardInstance->clearDataContext();
     m_artboardInstance->internalDataContext(dataContext);
     internalDataContext(dataContext);
 }
 
-void StateMachineInstance::dataContext(DataContext* dataContext)
+void StateMachineInstance::bindDataContext(rcp<DataContext> dataContext)
+{
+    clearDataContext();
+    if (dataContext->viewModelInstance())
+    {
+        dataContext->viewModelInstance()->addDependent(this);
+    }
+    m_artboardInstance->clearDataContext();
+    m_artboardInstance->internalDataContext(dataContext);
+    internalDataContext(dataContext);
+}
+
+void StateMachineInstance::dataContext(rcp<DataContext> dataContext)
 {
     clearDataContext();
     internalDataContext(dataContext);
 }
 
-void StateMachineInstance::internalDataContext(DataContext* dataContext)
+void StateMachineInstance::initScriptedObjects()
+{
+    for (auto obj : m_scriptedObjectsMap)
+    {
+        obj.second->reinit();
+    }
+}
+
+void StateMachineInstance::internalDataContext(rcp<DataContext> dataContext)
 {
     m_DataContext = dataContext;
-    bindDataBindsFromContext(dataContext);
+    bindDataBindsFromContext(dataContext.get());
     for (auto listenerViewModel : m_listenerViewModels)
     {
         listenerViewModel->bindFromContext(dataContext);
     }
+    for (auto& scriptedObjectItr : m_scriptedObjectsMap)
+    {
+        scriptedObjectItr.second->dataContext(dataContext);
+    }
+    initScriptedObjects();
 }
 
 void StateMachineInstance::rebind()
@@ -1829,13 +1884,9 @@ void StateMachineInstance::clearDataContext()
 {
     if (m_DataContext)
     {
-        if (m_ownsDataContext)
+        if (m_DataContext->viewModelInstance())
         {
-            if (m_DataContext->viewModelInstance())
-            {
-                m_DataContext->viewModelInstance()->removeDependent(this);
-            }
-            delete m_DataContext;
+            m_DataContext->viewModelInstance()->removeDependent(this);
         }
         m_DataContext = nullptr;
     }
@@ -1843,8 +1894,6 @@ void StateMachineInstance::clearDataContext()
     {
         listenerViewModel->clearDataContext();
     }
-
-    m_ownsDataContext = false;
 }
 
 void StateMachineInstance::unbind()
@@ -1955,7 +2004,8 @@ void StateMachineInstance::notifyListenerViewModels(
         {
             listenerViewModel->listener()->performChanges(this,
                                                           Vec2D(),
-                                                          Vec2D());
+                                                          Vec2D(),
+                                                          0);
         }
     }
 }
@@ -2011,7 +2061,7 @@ void StateMachineInstance::notifyEventListeners(
                         sourceArtboard->resolve(listener->eventId());
                     if (listenerEvent == event.event())
                     {
-                        listener->performChanges(this, Vec2D(), Vec2D());
+                        listener->performChanges(this, Vec2D(), Vec2D(), 0);
                         break;
                     }
                 }

@@ -16,8 +16,17 @@
 #include "rive/scripted/scripted_drawable.hpp"
 #include "rive/scripted/scripted_layout.hpp"
 #include "rive/scripted/scripted_object.hpp"
+#include "rive/data_bind/data_bind.hpp"
 
 using namespace rive;
+
+ScriptInput::~ScriptInput()
+{
+    if (m_ownsDataBind && m_dataBind)
+    {
+        delete m_dataBind;
+    }
+}
 
 ScriptInput* ScriptInput::from(Core* component)
 {
@@ -66,7 +75,9 @@ bool OptionalScriptedMethods::verifyImplementation(ScriptedObject* object,
     if (scriptProtocol == ScriptProtocol::node ||
         scriptProtocol == ScriptProtocol::layout ||
         scriptProtocol == ScriptProtocol::converter ||
-        scriptProtocol == ScriptProtocol::pathEffect)
+        scriptProtocol == ScriptProtocol::pathEffect ||
+        scriptProtocol == ScriptProtocol::listenerAction ||
+        scriptProtocol == ScriptProtocol::transitionCondition)
     {
         if (static_cast<lua_Type>(lua_getfield(state, -1, "update")) ==
             LUA_TFUNCTION)
@@ -125,6 +136,12 @@ bool OptionalScriptedMethods::verifyImplementation(ScriptedObject* object,
             m_implementedMethods |= m_measuresBit;
         }
         rive_lua_pop(state, 1);
+        if (static_cast<lua_Type>(lua_getfield(state, -1, "resize")) ==
+            LUA_TFUNCTION)
+        {
+            m_implementedMethods |= m_resizesBit;
+        }
+        rive_lua_pop(state, 1);
         if (static_cast<lua_Type>(lua_getfield(state, -1, "draw")) ==
             LUA_TFUNCTION)
         {
@@ -160,22 +177,26 @@ bool OptionalScriptedMethods::verifyImplementation(ScriptedObject* object,
     return true;
 }
 
-lua_State* ScriptAsset::vm()
+ScriptingVM* ScriptAsset::scriptingVM()
 {
     if (m_file == nullptr)
     {
         return nullptr;
     }
-    // We get the scripting VM from File for now, however,
-    // this will need to change if/when we support multiple VMs
     return m_file->scriptingVM();
+}
+
+lua_State* ScriptAsset::vm()
+{
+    auto scriptingVM = this->scriptingVM();
+    return scriptingVM ? scriptingVM->state() : nullptr;
 }
 #endif
 
 bool ScriptAsset::initScriptedObject(ScriptedObject* object)
 {
 #ifdef WITH_RIVE_SCRIPTING
-    if (vm() == nullptr)
+    if (scriptingVM() == nullptr)
     {
         return false;
     }
@@ -202,19 +223,43 @@ void ScriptAsset::registrationComplete(int ref)
 bool ScriptAsset::initScriptedObjectWith(ScriptedObject* object)
 {
 #if defined(WITH_RIVE_SCRIPTING)
-    auto state = vm();
-    if (state == nullptr)
+    auto scriptVM = scriptingVM();
+    if (scriptVM == nullptr)
     {
         return false;
     }
-    if (generatorFunctionRef() == 0)
+    lua_State* state = scriptVM->state();
+
+    int ref = 0;
+#ifdef WITH_RIVE_TOOLS
+    // Edit-time mode: generatorFunctionRef() is a key to look up the actual
+    // ref. Runtime mode: generatorFunctionRef() is the actual ref directly.
+
+    // Note that the editor can actually host both edit-time scripting contexts
+    // (where the editor owns the VM) and runtime ones (for artboards it's just
+    // displaying as part of the UI). This path works for both cases as in the
+    // latter hasGeneratorRef will return false.
+    ScriptingContext* context =
+        static_cast<ScriptingContext*>(lua_getthreaddata(state));
+    if (context != nullptr && context->hasGeneratorRef(generatorFunctionRef()))
+    {
+        ref = context->getGeneratorRef(generatorFunctionRef());
+    }
+    else
+#endif
+    {
+        // Runtime mode: generatorFunctionRef is the actual ref
+        ref = generatorFunctionRef();
+    }
+
+    if (ref == 0)
     {
         fprintf(stderr,
                 "ScriptAsset doesn't have a generator function %s\n",
                 name().c_str());
         return false;
     }
-    rive_lua_pushRef(state, generatorFunctionRef());
+    rive_lua_pushRef(state, ref);
 
     if (!m_initted)
     {
@@ -229,7 +274,7 @@ bool ScriptAsset::initScriptedObjectWith(ScriptedObject* object)
         m_initted = true;
     }
     object->implementedMethods(implementedMethods());
-    return object->scriptInit(state);
+    return object->scriptInit(scriptVM);
 #else
     return false;
 #endif

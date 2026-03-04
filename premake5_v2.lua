@@ -45,6 +45,10 @@ if _OPTIONS['with_optick'] then
     dofile(path.join(dependencies, 'premake5_optick.lua'))
 end
 
+if _OPTIONS['with_microprofile'] then
+    dofile(path.join(dependencies, 'premake5_microprofile.lua'))
+end
+
 if _OPTIONS['with_rive_scripting'] then
     local scripting = require(path.join(path.getabsolute('scripting/'), 'premake5'))
     luau = scripting.luau
@@ -70,6 +74,10 @@ do
         yoga,
     })
 
+    if _OPTIONS['with_microprofile'] then
+      includedirs({microprofile})
+    end
+
     filter('action:xcode4')
     do
         -- xcode doesnt like angle brackets except for -isystem
@@ -81,6 +89,14 @@ do
     defines({ 'YOGA_EXPORT=', '_RIVE_INTERNAL_' })
 
     files({ 'src/**.cpp', 'include/**.h', 'include/**.hpp', 'utils/no_op_factory.cpp' })
+
+    filter({'toolset:msc' })
+    do
+        -- add a debug visualizer for various runtime types for MSVC debugging.
+        -- (the visualization only works with MSVC-compiled projects, Clang-
+        -- built projects don't work)
+        files({ 'runtime.natvis' })
+    end
 
     filter('options:not for_unreal')
     do
@@ -124,9 +140,13 @@ do
         defines({ '_USE_MATH_DEFINES' })
     end
 
+    filter({})
+    
     if _OPTIONS['with_optick'] then
         includedirs({ optick .. '/src' })
     end
+
+
 
     filter('system:macosx or system:ios')
     do
