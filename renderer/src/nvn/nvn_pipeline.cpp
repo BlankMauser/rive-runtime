@@ -1,17 +1,13 @@
-#include "rive/renderer/nvn/nvn_pipeline.hpp"
+/*
+ * Copyright 2026 Rive
+ */
+
+// Compatibility translation unit:
+// older generated Ninja files may still reference src/nvn/nvn_pipeline.cpp.
+// NVN backend now uses shader_program_nvn instead of pipeline objects.
 
 namespace rive::gpu::nvn
 {
-ProgramSources BuildAtomicProgramSources(const ShaderBuildParams& params,
-                                         const char* versionLine)
-{
-    ProgramSources sources;
-    sources.vertex = BuildAtomicShaderSource(ShaderStage::vertex,
-                                             params,
-                                             versionLine);
-    sources.fragment = BuildAtomicShaderSource(ShaderStage::fragment,
-                                               params,
-                                               versionLine);
-    return sources;
-}
+void nvn_pipeline_compat_tu() {}
 } // namespace rive::gpu::nvn
+

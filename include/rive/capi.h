@@ -197,19 +197,22 @@ RiveRenderTarget* rive_nvn_render_target_new(uint32_t width,
                                              void* color_texture,
                                              void* depth_texture,
                                              uint32_t sample_count);
+void rive_nvn_render_buffer_set_gpu_range(void* buffer,
+                                          uint64_t gpu_address,
+                                          size_t size_in_bytes);
 void rive_render_target_release(RiveRenderTarget* target);
 uint32_t rive_render_target_width(const RiveRenderTarget* target);
 uint32_t rive_render_target_height(const RiveRenderTarget* target);
 
 typedef struct RiveNVNContextDesc
 {
-    void* device;
-    void* queue;
+    void* device;               /* nvn::Device* */
+    void* queue;                /* nvn::Queue* */
+    void* get_proc_address;     /* nvnDeviceGetProcAddress function pointer (optional, resolved from device if NULL) */
     uint32_t max_texture_size;
     uint8_t clip_space_bottom_up;
     uint8_t framebuffer_bottom_up;
     const RiveNVNAllocator* allocator;
-    uint8_t force_non_pls_path;
 } RiveNVNContextDesc;
 
 typedef void* (*RiveNVNAllocFn)(size_t size, size_t alignment, void* user);
@@ -224,6 +227,171 @@ typedef struct RiveNVNAllocator
     void* user;
 } RiveNVNAllocator;
 
+typedef enum RiveNVNInternalBufferSlot
+{
+    RIVE_NVN_INTERNAL_BUFFER_FLUSH_UNIFORM = 0,
+    RIVE_NVN_INTERNAL_BUFFER_IMAGE_DRAW_UNIFORM = 1,
+    RIVE_NVN_INTERNAL_BUFFER_PATH = 2,
+    RIVE_NVN_INTERNAL_BUFFER_PAINT = 3,
+    RIVE_NVN_INTERNAL_BUFFER_PAINT_AUX = 4,
+    RIVE_NVN_INTERNAL_BUFFER_CONTOUR = 5,
+} RiveNVNInternalBufferSlot;
+
+typedef enum RiveNVNShaderResourceSlot
+{
+    RIVE_NVN_RESOURCE_FLUSH_UNIFORM = 0,
+    RIVE_NVN_RESOURCE_PATH_BASE_INSTANCE_UNIFORM = 1,
+    RIVE_NVN_RESOURCE_IMAGE_DRAW_UNIFORM = 2,
+    RIVE_NVN_RESOURCE_PATH = 3,
+    RIVE_NVN_RESOURCE_PAINT = 4,
+    RIVE_NVN_RESOURCE_PAINT_AUX = 5,
+    RIVE_NVN_RESOURCE_CONTOUR = 6,
+    RIVE_NVN_RESOURCE_COVERAGE = 7,
+    RIVE_NVN_RESOURCE_TESS_VERTEX_TEXTURE = 8,
+    RIVE_NVN_RESOURCE_GRAD_TEXTURE = 9,
+    RIVE_NVN_RESOURCE_FEATHER_TEXTURE = 10,
+    RIVE_NVN_RESOURCE_ATLAS_TEXTURE = 11,
+    RIVE_NVN_RESOURCE_IMAGE_TEXTURE = 12,
+    RIVE_NVN_RESOURCE_IMAGE_SAMPLER = 13,
+    RIVE_NVN_RESOURCE_DST_COLOR_TEXTURE = 14,
+} RiveNVNShaderResourceSlot;
+
+typedef struct RiveNVNGpuCodeSection
+{
+    const void* control;
+    uint32_t control_size;
+    const void* code;
+    uint32_t code_size;
+} RiveNVNGpuCodeSection;
+
+typedef struct RiveNVNGpuCodeSections
+{
+    RiveNVNGpuCodeSection vertex;
+    RiveNVNGpuCodeSection fragment;
+} RiveNVNGpuCodeSections;
+
+/* Create the NVN render context implementation (caller owns the returned pointer). */
+RiveRenderContextImpl* rive_nvn_render_context_impl_new(
+    const RiveNVNContextDesc* desc);
+
+/* Convenience: creates RenderContextImpl + wraps it in RenderContext in one call. */
+RiveRenderContext* rive_nvn_render_context_new(
+    const RiveNVNContextDesc* desc);
+void rive_nvn_set_prefer_spirv_input(int enabled);
+int rive_nvn_uses_spirv_input(void);
+int rive_nvn_validate_glslc_output(const void* output_blob,
+                                   size_t output_size,
+                                   int require_reflection);
+uint32_t rive_nvn_shader_unique_key(uint32_t draw_type,
+                                    uint32_t shader_features,
+                                    uint32_t interlock_mode,
+                                    uint32_t shader_misc_flags);
+int rive_nvn_register_program(RiveRenderContextImpl* impl,
+                              uint32_t shader_key,
+                              void* program,
+                              int spirv_input,
+                              const void* glslc_output_blob,
+                              size_t glslc_output_size,
+                              int require_reflection);
+void rive_nvn_set_internal_buffer_gpu_range(RiveRenderContextImpl* impl,
+                                            uint32_t slot,
+                                            uint64_t gpu_address,
+                                            size_t size_in_bytes);
+int rive_nvn_set_texture_handle(RiveRenderContextImpl* impl,
+                                uint32_t slot,
+                                uint64_t texture_handle);
+int rive_nvn_set_image_handle(RiveRenderContextImpl* impl,
+                              uint32_t slot,
+                              uint64_t image_handle);
+int rive_nvn_glslc_compile_validate(const void* vertex_data,
+                                    size_t vertex_size,
+                                    const void* fragment_data,
+                                    size_t fragment_size,
+                                    int spirv_input,
+                                    int require_reflection);
+int rive_nvn_compile_and_register_program(RiveRenderContextImpl* impl,
+                                          uint32_t shader_key,
+                                          const void* vertex_data,
+                                          size_t vertex_size,
+                                          const void* fragment_data,
+                                          size_t fragment_size,
+                                          int spirv_input,
+                                          int require_reflection);
+int rive_nvn_extract_gpu_code_sections(const void* output_blob,
+                                       size_t output_size,
+                                       RiveNVNGpuCodeSections* out_sections);
+
+/*
+ * NVN initialization and session API.
+ * Call rive_nvn_initialize once before any other rive_nvn_* function.
+ * Then create one or more sessions to render artboards.
+ */
+
+/* Initialize NVN function pointer globals.  Must be called once before any
+ * other rive_nvn_* function.  Safe to call multiple times (idempotent). */
+void rive_nvn_initialize(void* device, void* get_proc_address);
+
+typedef struct RiveNVNSession RiveNVNSession;
+
+typedef struct RiveNVNSessionDesc
+{
+    void* device;               /* nvn::Device* */
+    void* queue;                /* nvn::Queue* */
+    void* get_proc_address;     /* optional if rive_nvn_initialize already called */
+    const RiveNVNAllocator* allocator;  /* optional custom allocator */
+    uint8_t clip_space_bottom_up;       /* 1 for NVN (GL-style) */
+    uint8_t framebuffer_bottom_up;      /* depends on nvnDeviceGetWindowOriginMode */
+} RiveNVNSessionDesc;
+
+typedef struct RiveNVNFrameDesc
+{
+    void* color_texture;        /* nvn::Texture* — target to render into */
+    void* depth_texture;        /* nvn::Texture* — optional, session creates if NULL */
+    void* command_buffer;       /* nvn::CommandBuffer* — must NOT be recording */
+    uint32_t width;
+    uint32_t height;
+    uint32_t msaa_sample_count; /* 0 or 1 = no MSAA */
+    RiveLoadAction load_action;
+    uint32_t clear_color;       /* ARGB when load_action == CLEAR */
+    RiveFit fit;
+    RiveAlignment alignment;
+    float scale_factor;         /* UI scale, typically 1.0 */
+    uint8_t disable_raster_ordering; /* 1: prefer atomics/msaa over raster ordering */
+    uint8_t clockwise_fill_override; /* 1: force clockwise path fill */
+    uint64_t frame_number;      /* monotonic frame counter for resource management */
+    uint64_t safe_frame_number; /* oldest frame still in flight */
+} RiveNVNFrameDesc;
+
+/* Create a new rendering session. */
+RiveNVNSession* rive_nvn_session_new(const RiveNVNSessionDesc* desc);
+void rive_nvn_session_release(RiveNVNSession* session);
+
+/* Access internals for advanced use (e.g. multi-artboard, custom transforms). */
+RiveRenderContext* rive_nvn_session_context(RiveNVNSession* session);
+RiveRenderer* rive_nvn_session_renderer(RiveNVNSession* session);
+
+/* Render one artboard to the target.  Records commands into
+ * desc->command_buffer.  Returns 1 on success, 0 on error. */
+int rive_nvn_session_render_artboard(
+    RiveNVNSession* session,
+    RiveArtboard* artboard,
+    const RiveNVNFrameDesc* frame);
+
+/* Manual begin/end for multi-artboard or custom transform rendering.
+ * Between begin and end, use rive_nvn_session_renderer() to draw. */
+int rive_nvn_session_begin_frame(RiveNVNSession* session,
+                                  const RiveNVNFrameDesc* frame);
+int rive_nvn_session_end_frame(RiveNVNSession* session);
+
+const char* rive_nvn_session_last_error(const RiveNVNSession* session);
+
+/*
+ * Optional hook-based runtime API.
+ * These are only available when linking with rive_nvn_hooks and are used by
+ * game plugins (e.g. skyline NRO) that intercept NVN calls to inject rive
+ * rendering.  Library consumers that provide their own device/queue should
+ * use the RiveNVNContextDesc API above instead.
+ */
 typedef struct RiveRuntimeStatus
 {
     uint32_t version;
@@ -252,11 +420,6 @@ typedef enum RiveRuntimeRenderMode
     RIVE_RUNTIME_RENDER_DIRECT = 0,
     RIVE_RUNTIME_RENDER_OFFSCREEN_BLIT = 1,
 } RiveRuntimeRenderMode;
-
-RiveRenderContextImpl* rive_nvn_render_context_impl_new(
-    const RiveNVNContextDesc* desc);
-RiveRenderContext* rive_nvn_render_context_new(
-    const RiveNVNContextDesc* desc);
 
 void rive_runtime_install_hooks(void);
 void rive_runtime_set_artboard(RiveArtboard* artboard);

@@ -4,27 +4,27 @@
 ninja_required_version = 1.6
 
 # core rules for default
-CFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:\Rei_Wolf\dev\devkitPro\devkitA64 --sysroot=D:\Rei_Wolf\dev\devkitPro\devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -Wall -pedantic -std=gnu99 -Wno-unused-function -Wno-unused-variable -MD -MP -Os -fPIC -w -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRIVE_NVN_SAFE_OBJECTS -DRIVE_NVN_ENABLE_LOGS=1 -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DRIVE_NVN_ENABLE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_COPY_TEXTURE=0 -DSB_CONFIG_UNITY -I../../dependencies/Tehreer_SheenBidi_v2.6/Headers
+CFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:/Rei_Wolf/dev/devkitPro/devkitA64 --sysroot=D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -Wall -pedantic -std=gnu99 -Wno-unused-function -Wno-unused-variable -MD -MP -Os -fPIC -w -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DRIVE_NVN_ENABLE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_COPY_TEXTURE=0 -DSB_CONFIG_UNITY -I../../dependencies/Tehreer_SheenBidi_v2.6/Headers
 rule cc
   command = clang $CFLAGS -x c -MF $out.d -c -o $out $in
   description = cc $out
   depfile = $out.d
   deps = gcc
 
-CXXFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:\Rei_Wolf\dev\devkitPro\devkitA64 --sysroot=D:\Rei_Wolf\dev\devkitPro\devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -Wall -pedantic -std=gnu99 -Wno-unused-function -Wno-unused-variable -MD -MP -Os -fPIC -w -std=c++17 -fno-exceptions -fno-rtti -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRIVE_NVN_SAFE_OBJECTS -DRIVE_NVN_ENABLE_LOGS=1 -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DRIVE_NVN_ENABLE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_COPY_TEXTURE=0 -DSB_CONFIG_UNITY -I../../dependencies/Tehreer_SheenBidi_v2.6/Headers
+CXXFLAGS= -fPIC --target=aarch64-none-elf --gcc-toolchain=D:/Rei_Wolf/dev/devkitPro/devkitA64 --sysroot=D:/Rei_Wolf/dev/devkitPro/devkitA64/aarch64-none-elf -mcpu=cortex-a57 -fno-threadsafe-statics -fdata-sections -ffunction-sections -Wno-error=multilib-not-found -Wall -pedantic -std=gnu99 -Wno-unused-function -Wno-unused-variable -MD -MP -Os -fPIC -w -std=c++17 -fno-exceptions -fno-rtti -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DRIVE_NVN_ENABLE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_COPY_TEXTURE=0 -DSB_CONFIG_UNITY -I../../dependencies/Tehreer_SheenBidi_v2.6/Headers
 rule cxx
   command = clang++ $CXXFLAGS -MF $out.d -c -o $out $in
   description = cxx $out
   depfile = $out.d
   deps = gcc
 
-RESFLAGS =  -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRIVE_NVN_SAFE_OBJECTS -DRIVE_NVN_ENABLE_LOGS=1 -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DRIVE_NVN_ENABLE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_COPY_TEXTURE=0 -DSB_CONFIG_UNITY -I../../dependencies/Tehreer_SheenBidi_v2.6/Headers
+RESFLAGS =  -DWITH_RIVE_TEXT -DWITH_RIVE_LAYOUT -DRELEASE -DNDEBUG -DRIVE_NO_ARM_NEON -DRIVE_NVN_ENABLE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_RASTER_ORDERING=0 -DRIVE_NVN_FORCE_COPY_TEXTURE=0 -DSB_CONFIG_UNITY -I../../dependencies/Tehreer_SheenBidi_v2.6/Headers
 rule rc
   command = windres -i $in -o $out $RESFLAGS
   description = rc $out
 
 rule ar
-  command = D:\Rei_Wolf\dev\devkitPro\devkitA64/bin/aarch64-none-elf-ar.exe rcs $out $in
+  command = D:/Rei_Wolf/dev/devkitPro/devkitA64/bin/aarch64-none-elf-ar.exe rcs $out $in
   description = ar $out
 
 rule copy

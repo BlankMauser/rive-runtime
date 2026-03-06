@@ -184,6 +184,10 @@ if _OPTIONS['with_vulkan'] or _OPTIONS['with-dawn'] or _OPTIONS['with-webgpu'] t
     makecommand = makecommand .. ' spirv'
 end
 
+if _OPTIONS['with_nvn'] then
+    makecommand = makecommand .. ' spirv-nvn-lint'
+end
+
 function execute_and_check(cmd)
     print(cmd)
     if not os.execute(cmd) then

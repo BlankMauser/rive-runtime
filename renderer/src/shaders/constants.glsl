@@ -130,7 +130,11 @@
 // PLS draw resources are either updated per flush or per draw. They go into set
 // 0 or set 1, depending on how often they are updated.
 #define PER_FLUSH_BINDINGS_SET 0
+#ifdef TARGET_NVN_SPIRV
+#define PER_DRAW_BINDINGS_SET 0
+#else
 #define PER_DRAW_BINDINGS_SET 1
+#endif
 
 // Index at which we access each resource.
 // (Enumerate buffers first because GLES allows a hard limit on buffer index
@@ -158,13 +162,25 @@
 
 // Samplers are accessed at the same index as their corresponding texture, so we
 // put them in a separate binding set.
+#ifdef TARGET_NVN_SPIRV
+#define IMMUTABLE_SAMPLER_BINDINGS_SET 0
+#else
 #define IMMUTABLE_SAMPLER_BINDINGS_SET 2
+#endif
 
 // PLS textures are accessed at the same index as their PLS planes, so we put
 // them in a separate binding set.
+#ifdef TARGET_NVN_SPIRV
+#define PLS_TEXTURE_BINDINGS_SET 0
+#else
 #define PLS_TEXTURE_BINDINGS_SET 3
+#endif
 
+#ifdef TARGET_NVN_SPIRV
+#define BINDINGS_SET_COUNT 1
+#else
 #define BINDINGS_SET_COUNT 4
+#endif
 
 // NVN: force a fixed PLS layout so we don't depend on compiler reflection.
 #ifdef RIVE_NVN_PLS_FIXED_LAYOUT
