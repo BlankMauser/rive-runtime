@@ -139,7 +139,7 @@ static void dump(JSoner& js, rive::File* file)
     js.pop();
 }
 
-static rcp<rive::File> open_file(const char name[])
+static rive::rcp<rive::File> open_file(const char name[])
 {
     FILE* f = fopen(name, "rb");
     if (!f)

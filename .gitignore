@@ -54,8 +54,15 @@ dev/analysis_report
 
 # Build directories
 build/bin
+build/dependencies
 dev/test/build/bin
 rivinfo/build/macosx
+rivinfo/build/windows
+rivinfo/build/*.sln
+rivinfo/build/*.vcxproj
+rivinfo/build/*.vcxproj.filters
+rivinfo/build/*_msvc_build.log
+out
 
 # Skia dependencies
 skia/dependencies/skia_recorder
@@ -87,6 +94,10 @@ skia/**/build/android
 /skia/dependencies/skia_debug
 /skia/dependencies/skia-experimental
 dependencies/windows/cache
+dependencies/Tehreer_SheenBidi_v2.6
+dependencies/rive-app_harfbuzz_rive_13.1.1
+dependencies/rive-app_miniaudio_rive_changes_5
+dependencies/rive-app_yoga_rive_changes_v2_0_1_2
 
 # Local development setup
 compile_commands.json
@@ -94,3 +105,4 @@ compile_commands.json
 # running tests results in this
 tests/unit_tests/dependencies
 tests/unit_tests/default.profraw
+tests/unit_tests/out

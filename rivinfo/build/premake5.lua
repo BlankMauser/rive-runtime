@@ -1,4 +1,5 @@
 workspace('rive')
+platforms({ 'x64' })
 configurations({ 'debug', 'release' })
 
 project('rivinfo')
@@ -26,6 +27,9 @@ if os.host() == 'macosx' then
         'rive',
         'z', -- lib av format
     })
+elseif os.host() == 'windows' then
+    links({ 'rive', 'rive_harfbuzz', 'rive_sheenbidi', 'rive_yoga' })
+    staticruntime('On')
 else
     links({ 'm', 'rive', 'z', 'dl' })
 end
