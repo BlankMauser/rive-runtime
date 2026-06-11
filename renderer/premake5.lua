@@ -10,7 +10,7 @@ if _OPTIONS['with-skia'] then
     dofile(RIVE_RUNTIME_DIR .. '/skia/renderer/premake5_v2.lua')
 end
 
-if not _OPTIONS['with-webgpu'] then
+if not _OPTIONS['with-webgpu'] and not _OPTIONS['for_switch'] then
     project('path_fiddle')
     do
         dependson('rive')

@@ -347,8 +347,8 @@ PLS_DECL4F_READONLY(CLIP_PLANE_IDX, clipBuffer);
 #ifdef @ENABLE_CLIPPING
 PLS_DECLUI(CLIP_PLANE_IDX, clipBuffer);
 #endif // ENABLE_CLIPPING
-#endif // !PLS_BLEND_SRC_OVER
-PLS_DECLUI_UAV(COVERAGE_PLANE_IDX, coverageAtomicBuffer);
+#endif // !PLS_BLEND_SRC_OVER && !RIVE_NVN_PLS_CLIP_RGBA8
+PLS_DECLUI_ATOMIC(COVERAGE_PLANE_IDX, coverageAtomicBuffer);
 PLS_BLOCK_END
 
 FRAG_STORAGE_BUFFER_BLOCK_BEGIN
@@ -385,7 +385,7 @@ INLINE void apply_clip(uint clipID,
                        CLIP_VALUE_TYPE clipData,
                        INOUT(half) coverage)
 {
-#ifdef @PLS_BLEND_SRC_OVER
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
     // The clipID is packed into r & g of clipData. Use a fuzzy equality test
     // since we lose precision when the clip value gets stored to and from the
     // attachment.
@@ -464,7 +464,7 @@ INLINE void resolve_paint(uint pathID,
         if (@ENABLE_CLIPPING && paintType == CLIP_UPDATE_PAINT_TYPE)
         {
 #ifndef @RESOLVE_PLS
-#ifdef @PLS_BLEND_SRC_OVER
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
             // This was actually a clip update. fragColorOut contains the packed
             // clipID.
             fragClipOut.rg = fragColorOut.ba; // Pack the clipID into r & g.
@@ -542,7 +542,7 @@ INLINE void blend_pls_color_src_over(half4 fragColorOut PLS_CONTEXT_DECL)
 #if defined(@ENABLE_CLIPPING) && !defined(@RESOLVE_PLS)
 INLINE void emit_pls_clip(CLIP_VALUE_TYPE fragClipOut PLS_CONTEXT_DECL)
 {
-#ifdef @PLS_BLEND_SRC_OVER
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
     PLS_STORE4F(clipBuffer, fragClipOut);
 #else
     if (fragClipOut != 0u)
@@ -679,7 +679,7 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
 #endif
     VARYING_UNPACK(v_pathID, ushort);
 
-    uint lastCoverageData = PLS_LOADUI_UAV(coverageAtomicBuffer);
+    uint lastCoverageData = PLS_LOADUI_ATOMIC(coverageAtomicBuffer);
     ushort lastPathID =
         cast_uint_to_ushort(lastCoverageData >> FIXED_COVERAGE_BIT_COUNT);
     lastPathID = apply_driver_workaround_for_path_id(lastPathID);
@@ -711,8 +711,8 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
 #endif
 
     int coverageDeltaFixed = int(round(coverage * FIXED_COVERAGE_PRECISION));
-    PLS_STOREUI_UAV(coverageAtomicBuffer,
-                    currPathCoverageData + uint(coverageDeltaFixed));
+    PLS_STOREUI_ATOMIC(coverageAtomicBuffer,
+                       currPathCoverageData + uint(coverageDeltaFixed));
 
     half4 fragColorOut = make_half4(.0);
 #ifdef @ENABLE_CLIPPING
@@ -787,7 +787,7 @@ ATOMIC_PLS_MAIN_WITH_IMAGE_UNIFORMS(@drawFragmentMain)
 #endif
 
     // Resolve the previous path.
-    uint lastCoverageData = PLS_LOADUI_UAV(coverageAtomicBuffer);
+    uint lastCoverageData = PLS_LOADUI_ATOMIC(coverageAtomicBuffer);
     ushort lastPathID =
         cast_uint_to_ushort(lastCoverageData >> FIXED_COVERAGE_BIT_COUNT);
     lastPathID = apply_driver_workaround_for_path_id(lastPathID);
@@ -861,7 +861,7 @@ ATOMIC_PLS_MAIN_WITH_IMAGE_UNIFORMS(@drawFragmentMain)
 
     // Write out a coverage value of "zero at pathID=0" so a future resolve
     // attempt doesn't affect this pixel.
-    PLS_STOREUI_UAV(coverageAtomicBuffer, FIXED_COVERAGE_ZERO_UINT);
+    PLS_STOREUI_ATOMIC(coverageAtomicBuffer, FIXED_COVERAGE_ZERO_UINT);
 
     EMIT_ATOMIC_PLS
 }
@@ -878,11 +878,15 @@ ATOMIC_PLS_MAIN(@drawFragmentMain)
     half4 color = PLS_LOAD4F(colorBuffer);
     PLS_STORE4F(colorBuffer, color.bgra);
 #endif
-    PLS_STOREUI_UAV(coverageAtomicBuffer, uniforms.coverageClearValue);
+    PLS_STOREUI_ATOMIC(coverageAtomicBuffer, uniforms.coverageClearValue);
 #ifdef @ENABLE_CLIPPING
     if (@ENABLE_CLIPPING)
     {
+#if defined(@PLS_BLEND_SRC_OVER) || defined(RIVE_NVN_PLS_CLIP_RGBA8)
+        PLS_STORE4F(clipBuffer, make_half4(.0));
+#else
         PLS_STOREUI(clipBuffer, 0u);
+#endif
     }
 #endif
 #ifdef @FIXED_FUNCTION_COLOR_OUTPUT
@@ -901,7 +905,7 @@ PLS_FRAG_COLOR_MAIN(@drawFragmentMain)
 ATOMIC_PLS_MAIN(@drawFragmentMain)
 #endif
 {
-    uint lastCoverageData = PLS_LOADUI_UAV(coverageAtomicBuffer);
+    uint lastCoverageData = PLS_LOADUI_ATOMIC(coverageAtomicBuffer);
     half coverageCount = from_fixed(lastCoverageData & FIXED_COVERAGE_MASK);
     ushort lastPathID =
         cast_uint_to_ushort(lastCoverageData >> FIXED_COVERAGE_BIT_COUNT);

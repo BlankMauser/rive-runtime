@@ -68,6 +68,11 @@ newoption({
 })
 
 newoption({
+    trigger = 'for_switch',
+    description = 'compile for Nintendo Switch homebrew (devkitA64)',
+})
+
+newoption({
     trigger = 'android_api',
     description = 'Target Android API version number',
     default = '21',
@@ -553,6 +558,112 @@ if _OPTIONS['for_android'] then
 
     filter({})
 end
+
+if _OPTIONS['for_switch'] then
+    system('linux')
+    rive_target_os = 'switch'
+
+    pic('on')
+    buildoptions({ '-fPIC' })
+    linkoptions({ '-fPIC' })
+
+    local devkitpro = os.getenv('DEVKITPRO')
+    local devkita64 = os.getenv('DEVKITA64') or (devkitpro and (devkitpro .. '/devkitA64'))
+    if not devkita64 or devkita64 == '' then
+        error('Set DEVKITPRO/DEVKITA64 (devkitPro devkitA64 toolchain)')
+    end
+
+    premake.tools.switch_a64 = {}
+    for k, v in pairs(premake.tools.clang) do
+        premake.tools.switch_a64[k] = v
+    end
+
+    local switch_tools = {
+        cc = 'clang',
+        cxx = 'clang++',
+        ar = devkita64 .. '/bin/aarch64-none-elf-ar' .. (os.host() == 'windows' and '.exe' or ''),
+    }
+    function premake.tools.switch_a64.gettoolname(cfg, tool)
+        return switch_tools[tool]
+    end
+
+    local premake_valid_tools = premake.action._list[_ACTION].valid_tools
+    if premake_valid_tools ~= nil then
+        premake_valid_tools['cc'][#premake_valid_tools['cc'] + 1] = 'switch_a64'
+    end
+
+    toolset('switch_a64')
+
+    local sysroot = devkita64 .. '/aarch64-none-elf'
+    buildoptions({
+        '--target=aarch64-none-elf',
+        '--gcc-toolchain=' .. devkita64,
+        '--sysroot=' .. sysroot,
+        '-mcpu=cortex-a57',
+        '-fno-threadsafe-statics',
+        '-fdata-sections',
+        '-ffunction-sections',
+    })
+    linkoptions({
+        '--target=aarch64-none-elf',
+        '--gcc-toolchain=' .. devkita64,
+        '--sysroot=' .. sysroot,
+        '-mcpu=cortex-a57',
+        '-Wl,--gc-sections',
+    })
+
+    architecture('arm64')
+
+    defines({ 'RIVE_NO_ARM_NEON' })
+    defines({ 'RIVE_NVN_ENABLE_RASTER_ORDERING=0' })
+    defines({ 'RIVE_NVN_FORCE_RASTER_ORDERING=0' })
+    defines({ 'RIVE_NVN_FORCE_COPY_TEXTURE=0' })
+
+    local switch_includes = {}
+    local cxx_base = devkita64 .. '/aarch64-none-elf/include/c++'
+    local cxx_versions = os.matchdirs(cxx_base .. '/*')
+    if #cxx_versions > 0 then
+        table.sort(cxx_versions)
+        local cxx_root = cxx_versions[#cxx_versions]
+        table.insert(switch_includes, cxx_root)
+        table.insert(switch_includes, cxx_root .. '/aarch64-none-elf')
+        table.insert(switch_includes, cxx_root .. '/backward')
+    end
+
+    local gcc_base = devkita64 .. '/lib/gcc/aarch64-none-elf'
+    local gcc_versions = os.matchdirs(gcc_base .. '/*')
+    if #gcc_versions > 0 then
+        table.sort(gcc_versions)
+        local gcc_root = gcc_versions[#gcc_versions]
+        table.insert(switch_includes, gcc_root .. '/include')
+        table.insert(switch_includes, gcc_root .. '/include-fixed')
+    end
+    local switch_sdk_include = path.getabsolute(_WORKING_DIR .. '/dependencies/switch/include')
+    if os.isdir(switch_sdk_include) then
+        table.insert(switch_includes, switch_sdk_include)
+    end
+
+    if #switch_includes > 0 then
+        filter({ 'options:for_switch', 'language:C++' })
+        externalincludedirs(switch_includes)
+        filter({})
+    end
+end
+
+filter({ 'options:for_switch' })
+do
+    removebuildoptions({ '-ffreestanding' })
+    removelinkoptions({ '-ffreestanding' })
+    buildoptions({ '-Wno-error=multilib-not-found' })
+end
+filter({})
+
+filter({ 'options:for_switch', 'language:C' })
+do
+    removebuildoptions({ '-ansi' })
+    buildoptions({ '-std=gnu99' })
+end
+filter({})
 
 filter('system:linux', 'options:arch=x64')
 do

@@ -29,7 +29,7 @@
 #include <immintrin.h>
 #endif
 
-#if defined(__ARM_NEON__) || defined(__aarch64__)
+#if (defined(__ARM_NEON__) || defined(__aarch64__)) && !defined(RIVE_NO_ARM_NEON)
 #include <arm_neon.h>
 #endif
 
@@ -443,7 +443,7 @@ template <> SIMD_ALWAYS_INLINE gvec<float, 2> sqrt(gvec<float, 2> x)
 }
 #endif
 
-#ifdef __aarch64__
+#if defined(__aarch64__) && !defined(RIVE_NO_ARM_NEON)
 template <> SIMD_ALWAYS_INLINE gvec<float, 4> sqrt(gvec<float, 4> x)
 {
     float32x4_t _x;
@@ -562,7 +562,7 @@ SIMD_ALWAYS_INLINE void store(void* dst, gvec<T, N> vec)
 
 ////// Column-major (transposed) loads //////
 
-#if defined(__ARM_NEON__) || defined(__aarch64__)
+#if (defined(__ARM_NEON__) || defined(__aarch64__)) && !defined(RIVE_NO_ARM_NEON)
 SIMD_ALWAYS_INLINE std::
     tuple<gvec<float, 4>, gvec<float, 4>, gvec<float, 4>, gvec<float, 4>>
     load4x4f(const float* matrix)

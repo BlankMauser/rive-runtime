@@ -53,6 +53,12 @@ docs
 dev/analysis_report
 
 # Build directories
+build/dependencies/5A1947F7A
+build/dependencies/71A7E5C05
+build/dependencies/6511C7E38
+build/dependencies/B223B0E94
+renderer/out
+build/out
 build/bin
 build/dependencies
 dev/test/build/bin
@@ -106,3 +112,6 @@ compile_commands.json
 tests/unit_tests/dependencies
 tests/unit_tests/default.profraw
 tests/unit_tests/out
+
+# Renderer dependencies
+renderer/dependencies

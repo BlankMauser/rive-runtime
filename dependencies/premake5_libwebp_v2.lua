@@ -156,6 +156,24 @@ do
         libwebp .. '/src/demux/demux.c',
     })
 
+    filter({ 'options:for_switch' })
+    do
+        -- devkitA64 clang + GCC headers trip over NEON intrinsics in these TU's.
+        removefiles({
+            libwebp .. '/src/dsp/alpha_processing_neon.c',
+            libwebp .. '/src/dsp/dec_neon.c',
+            libwebp .. '/src/dsp/filters_neon.c',
+            libwebp .. '/src/dsp/lossless_neon.c',
+            libwebp .. '/src/dsp/neon.h',
+            libwebp .. '/src/dsp/rescaler_neon.c',
+            libwebp .. '/src/dsp/upsampling_neon.c',
+            libwebp .. '/src/dsp/yuv_neon.c',
+            libwebp .. '/src/dsp/cost_neon.c',
+            libwebp .. '/src/dsp/enc_neon.c',
+            libwebp .. '/src/dsp/lossless_enc_neon.c',
+        })
+    end
+
     filter({ 'system:windows', 'toolset:clang' })
     do
         -- https://github.com/webmproject/libwebp/blob/233e86b91f4e0af7833d50013e3b978f825f73f5/src/dsp/cpu.h#L57

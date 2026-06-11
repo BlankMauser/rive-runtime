@@ -151,6 +151,11 @@ $(OUT)/rive_renderer_appletvsimulator.metallib.c: $(OUT)/ios/rive_renderer_apple
 $(OUT)/spirv/.: | $(OUT)/.
 	@mkdir -p $@
 
+## Optional reflection validation for NVN/glslcompile workflows.
+GLSLANG_VALIDATOR ?= $(if $(wildcard ../../../../../deps/glslang/bin/glslangValidator.exe),../../../../../deps/glslang/bin/glslangValidator.exe,glslangValidator)
+SPIRV_DIS ?= spirv-dis
+SPIRV_VAL ?= spirv-val
+
 # All glsl source files that need to be built
 SPIRV_STANDARD_INPUTS := $(wildcard spirv/*.main) \
 				 $(wildcard spirv/*.vert) \
@@ -350,6 +355,14 @@ $(eval $(call make_spirv_rules, $(SPIRV_DRAW_MSAA_INPUTS), webgpu_fixedcolor_fra
 
 spirv: $(SPIRV_OUTPUTS_HEADERS)
 spirv-binary: $(SPIRV_OUTPUTS_BINARY)
+
+.PHONY: spirv-reflect-check
+spirv-reflect-check: $(MINIFY_STAMP) | $(OUT)/spirv/.
+	@python3 validate_reflection.py --out $(OUT) --validator "$(GLSLANG_VALIDATOR)"
+
+.PHONY: spirv-nvn-lint
+spirv-nvn-lint: $(MINIFY_STAMP) | $(OUT)/spirv/.
+	@python3 validate_nvn_spirv.py --out $(OUT) --validator "$(GLSLANG_VALIDATOR)" --spirv-dis "$(SPIRV_DIS)" --spirv-val "$(SPIRV_VAL)"
 
 ## d3d compilation.
 .PHONY: $(OUT)/d3d/render_atlas.frag.h

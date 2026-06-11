@@ -20,7 +20,15 @@ do
     end
     filter({})
 
-    buildoptions({ '-Wall', '-ansi', '-pedantic' })
+    filter('options:for_switch')
+    do
+        buildoptions({ '-Wall', '-pedantic', '-std=gnu99' })
+    end
+    filter('options:not for_switch')
+    do
+        buildoptions({ '-Wall', '-ansi', '-pedantic' })
+    end
+    filter({})
 
     linkoptions({ '-r' })
 

@@ -130,7 +130,11 @@
 // PLS draw resources are either updated per flush or per draw. They go into set
 // 0 or set 1, depending on how often they are updated.
 #define PER_FLUSH_BINDINGS_SET 0
+#ifdef TARGET_NVN_SPIRV
+#define PER_DRAW_BINDINGS_SET 0
+#else
 #define PER_DRAW_BINDINGS_SET 1
+#endif
 
 // Index at which we access each resource.
 // (Enumerate buffers first because GLES allows a hard limit on buffer index
@@ -158,20 +162,70 @@
 
 // Samplers are accessed at the same index as their corresponding texture, so we
 // put them in a separate binding set.
+#ifdef TARGET_NVN_SPIRV
+#define IMMUTABLE_SAMPLER_BINDINGS_SET 0
+#else
 #define IMMUTABLE_SAMPLER_BINDINGS_SET 2
+#endif
 
 // PLS textures are accessed at the same index as their PLS planes, so we put
 // them in a separate binding set.
+#ifdef TARGET_NVN_SPIRV
+#define PLS_TEXTURE_BINDINGS_SET 0
+#else
 #define PLS_TEXTURE_BINDINGS_SET 3
+#endif
 
+#ifdef TARGET_NVN_SPIRV
+#define BINDINGS_SET_COUNT 1
+#else
 #define BINDINGS_SET_COUNT 4
+#endif
+
+// NVN: force a fixed PLS layout so we don't depend on compiler reflection.
+#ifdef RIVE_NVN_PLS_FIXED_LAYOUT
+#define RIVE_PLS_BINDING_BASE 0
+#define RIVE_PLS_COLOR_BINDING 0
+#define RIVE_PLS_CLIP_BINDING 1
+#define RIVE_PLS_SCRATCH_BINDING 2
+#define RIVE_PLS_COVERAGE_BINDING 3
+#endif
+
+// Optional base offset for PLS plane binding indices (NVN can override).
+#ifndef RIVE_PLS_BINDING_BASE
+#define RIVE_PLS_BINDING_BASE 0
+#endif
+
+// Optional per-plane binding overrides (NVN can override).
+#ifndef RIVE_PLS_COLOR_BINDING
+#define RIVE_PLS_COLOR_BINDING (RIVE_PLS_BINDING_BASE + 0)
+#endif
+#ifndef RIVE_PLS_CLIP_BINDING
+#define RIVE_PLS_CLIP_BINDING (RIVE_PLS_BINDING_BASE + 1)
+#endif
+#ifndef RIVE_PLS_SCRATCH_BINDING
+#define RIVE_PLS_SCRATCH_BINDING (RIVE_PLS_BINDING_BASE + 2)
+#endif
+#ifndef RIVE_PLS_COVERAGE_BINDING
+#define RIVE_PLS_COVERAGE_BINDING (RIVE_PLS_BINDING_BASE + 3)
+#endif
 
 // Index of each pixel local storage plane.
-#define COLOR_PLANE_IDX 0
-#define CLIP_PLANE_IDX 1
-#define SCRATCH_COLOR_PLANE_IDX 2
-#define COVERAGE_PLANE_IDX 3
+#ifndef COLOR_PLANE_IDX
+#define COLOR_PLANE_IDX RIVE_PLS_COLOR_BINDING
+#endif
+#ifndef CLIP_PLANE_IDX
+#define CLIP_PLANE_IDX RIVE_PLS_CLIP_BINDING
+#endif
+#ifndef SCRATCH_COLOR_PLANE_IDX
+#define SCRATCH_COLOR_PLANE_IDX RIVE_PLS_SCRATCH_BINDING
+#endif
+#ifndef COVERAGE_PLANE_IDX
+#define COVERAGE_PLANE_IDX RIVE_PLS_COVERAGE_BINDING
+#endif
+#ifndef PLS_PLANE_COUNT
 #define PLS_PLANE_COUNT 4
+#endif
 
 // This is the framebuffer attachment index of the final color output during the
 // "coalesced" atomic resolve. (Currently only used by Vulkan.)

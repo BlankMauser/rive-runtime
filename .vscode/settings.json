@@ -103,7 +103,10 @@
         "span": "cpp",
         "typeindex": "cpp",
         "filesystem": "cpp",
-        "*.idl": "cpp"
+        "*.idl": "cpp",
+        "xmemory": "cpp",
+        "xtr1common": "cpp",
+        "xutility": "cpp"
     },
     "git.ignoreLimitWarning": true
 }

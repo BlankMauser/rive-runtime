@@ -1,0 +1,1 @@
+export-compile-commands --config=debug --out=out/compdb --with_rive_text --with_rive_layout --for_switch --nvn_safe_objects --nvn_logs

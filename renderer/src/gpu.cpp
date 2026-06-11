@@ -13,6 +13,10 @@
 
 #include "generated/shaders/draw_path.vert.exports.h"
 
+#ifndef GLSL_ENABLE_DITHER
+#define GLSL_ENABLE_DITHER "_EXPORTED_ENABLE_DITHER"
+#endif
+
 namespace rive::gpu
 {
 static_assert(kGradTextureWidth == GRAD_TEXTURE_WIDTH);

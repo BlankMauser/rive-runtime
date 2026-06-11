@@ -7,6 +7,13 @@ newoption({
     trigger = 'with_vulkan',
     description = 'compile with support for vulkan',
 })
+newoption({
+    trigger = 'with_nvn',
+    description = 'compile with support for NVN (Nintendo Switch)',
+})
+if _OPTIONS['for_switch'] and not _OPTIONS['with_nvn'] then
+    _OPTIONS['with_nvn'] = true
+end
 -- Guard this in an "if" (instead of filter()) so we don't download these repos when not building
 -- for Vulkan.
 if _OPTIONS['with_vulkan'] then
@@ -37,6 +44,31 @@ end
 filter('system:android')
 do
     defines({ 'RIVE_ANDROID' })
+end
+
+if _OPTIONS['with_nvn'] then
+    defines({ 'RIVE_NVN', 'SL_MEM_SIZE=0x10000000' })
+    local nvn_headers_cpp =
+        path.getabsolute(RIVE_RUNTIME_DIR .. '/build/dependencies/nvn/include')
+    local nvn_headers_c =
+        path.getabsolute(RIVE_RUNTIME_DIR .. '/dependencies/switch/include')
+    local include_dirs = {}
+
+    if os.isdir(nvn_headers_cpp) then
+        table.insert(include_dirs, nvn_headers_cpp)
+    end
+
+    if os.isdir(nvn_headers_c) and
+        os.isfile(path.join(nvn_headers_c, 'nvn', 'nvn.hpp')) then
+        table.insert(include_dirs, nvn_headers_c)
+    end
+
+    if #include_dirs == 0 then
+        error('NVN headers not found at ' .. nvn_headers_cpp .. ' or ' ..
+                  nvn_headers_c)
+    end
+
+    nvn_headers = include_dirs
 end
 
 newoption({
@@ -161,6 +193,10 @@ if _OPTIONS['with_vulkan'] or _OPTIONS['with-dawn'] or _OPTIONS['with-webgpu'] t
     makecommand = makecommand .. ' spirv'
 end
 
+if _OPTIONS['with_nvn'] then
+    makecommand = makecommand .. ' spirv-nvn-lint'
+end
+
 function execute_and_check(cmd)
     print(cmd)
     if not os.execute(cmd) then
@@ -212,6 +248,16 @@ do
     files({ 'src/*.cpp', 'src/*.hpp', 'src/*.h', 'src/shaders/*.glsl',
             'src/shaders/*.frag', 'src/shaders/*.vert', 'include/**.hpp', 'include/**.h' })
 
+    if _OPTIONS['with_nvn'] then
+        externalincludedirs(nvn_headers)
+        files({
+            'src/nvn/**.cpp',
+            'include/rive/renderer/nvn/**.hpp',
+            RIVE_RUNTIME_DIR .. '/dependencies/switch/source/nvn/nvn.cpp',
+            RIVE_RUNTIME_DIR .. '/dependencies/switch/source/gfx/managed/*.cpp',
+        })
+    end
+
 
     if _OPTIONS['with_optick'] then
         includedirs({optick .. '/src'})
@@ -251,7 +297,7 @@ do
         })
     end
 
-    filter({ 'system:not ios', 'options:not no_gl' })
+    filter({ 'system:not ios', 'options:not no_gl', 'options:not for_switch' })
     do
         files({
             'src/gl/gl_state.cpp',
@@ -263,7 +309,7 @@ do
         })
     end
 
-    filter({ 'system:windows or macosx or linux' })
+    filter({ 'system:windows or macosx or linux', 'options:not for_switch' })
     do
         files({
             'src/gl/pls_impl_webgl.cpp', -- Emulate WebGL with ANGLE.

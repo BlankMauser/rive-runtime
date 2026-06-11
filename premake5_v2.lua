@@ -1,4 +1,7 @@
 dofile('rive_build_config.lua')
+if _OPTIONS['for_switch'] and not _OPTIONS['with_rive_audio'] then
+    _OPTIONS['with_rive_audio'] = 'disabled'
+end
 
 filter({ 'options:with_rive_tools' })
 do
@@ -85,7 +88,7 @@ do
 
     defines({ 'YOGA_EXPORT=', '_RIVE_INTERNAL_' })
 
-    files({ 'src/**.cpp', 'include/**.h', 'include/**.hpp' })
+    files({ 'src/**.cpp', 'include/**.h', 'include/**.hpp', 'utils/no_op_factory.cpp' })
 
     filter({'toolset:msc' })
     do

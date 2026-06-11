@@ -86,6 +86,20 @@ case "$(uname -s)" in
         NUM_CORES=$(grep -c processor /proc/cpuinfo)
         ;;
 esac
+if [[ "$HOST_MACHINE" = "windows" ]]; then
+    if [[ -n "$RIVE_TMP" ]]; then
+        # Use a Windows path so native tools honor TMP/TEMP.
+        if command -v cygpath >/dev/null 2>&1; then
+            RIVE_TMP_WIN=$(cygpath -m "$RIVE_TMP")
+        else
+            RIVE_TMP_WIN="$RIVE_TMP"
+        fi
+        export TMPDIR="$RIVE_TMP_WIN"
+        export TMP="$RIVE_TMP_WIN"
+        export TEMP="$RIVE_TMP_WIN"
+        mkdir -p "$RIVE_TMP_WIN"
+    fi
+fi
 RIVE_NO_BUILD=false
 # don't build if all we want to do is re run premake for shader generation for example.
 if [[ "$1" = "nobuild" ]]; then
